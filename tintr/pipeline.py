@@ -49,14 +49,17 @@ class Pipeline:
 
     # ------------------------------------------------------------------ connect / scan
     def connect(self, rescan: bool = False) -> list[M.LayerEntry]:
-        """Connect and load the layer list from manifest.json; full project scan only when needed."""
+        """Connect and load the layer list from manifest.json. The full project scan runs only on request."""
         t = time.time()
         bridge.connect(self.cfg.rpc_port)
         self.project = bridge.current_project()
         self.log(f"Project: {self.project.path}  ({self.project.width}x{self.project.height})")
         self.manifest = M.Manifest.load(self.project.path)
-        if rescan or not self.manifest.layers:
+        if rescan:
             return self.rescan()
+        if not self.manifest.layers:
+            self.log("Цей проект ще не скановано — натисніть «Сканувати проект».")
+            return []
         missing = []
         for e in self.manifest.layers.values():
             e.missing = bridge.layer_name(e.clip_id, e.layer_id) is None

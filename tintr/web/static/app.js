@@ -198,9 +198,11 @@ function treeView() {
       <span class="swatch" style="${l.swatch ? `background:${l.swatch}` : ""}"></span>
       <span class="layer-text"><b>${esc(l.name)}</b><small class="tone-${l.tone}">${esc(layerState(l))}</small></span>
       <span class="count">${l.done}/${l.total}</span></button>`).join("")}</div>`).join("");
+  const scanned = S.project.scanned;
+  const empty = scanned ? "Шарів з тегом _cc- не знайдено." : "Проект ще не скановано.";
   return `<aside class="tree"><div class="tree-head"><span class="eyebrow">Кліпи</span>
-    <button class="link" data-act="rescan" ${S.busy ? "disabled" : ""} title="Знайти нові шари з тегом _cc- у всіх кліпах">Пересканувати</button></div>
-    ${clips || '<div style="padding:0 20px;color:var(--muted)">Шарів з тегом _cc- не знайдено.</div>'}</aside>`;
+    <button class="link" data-act="rescan" ${S.busy ? "disabled" : ""} title="Знайти шари з тегом _cc- у всіх кліпах">${scanned ? "Пересканувати" : "Сканувати"}</button></div>
+    ${clips || `<div style="padding:0 20px;color:var(--muted)">${empty}</div>`}</aside>`;
 }
 
 function layerState(l) {
@@ -215,7 +217,17 @@ function layerState(l) {
 // ---------- center
 function centerView() {
   const l = curLayer();
-  if (!l) return `<main class="center"><div class="stage"><div class="empty"><b>Немає шарів</b>Додайте тег _cc- до назви шару в TVPaint і натисніть «Пересканувати».</div></div></main>`;
+  if (!l) {
+    const busy = S.busy ? "disabled" : "";
+    const body = S.busy === "Сканування проекту"
+      ? `<b>Сканування…</b>Tintr проходить усі кліпи проекту і шукає шари з тегом _cc-. На великому проекті це може тривати.`
+      : S.project.scanned
+        ? `<b>Шарів з тегом не знайдено</b>Додайте тег _cc- до назви шару персонажа в TVPaint і проскануйте проект знову.
+           <button class="btn primary" data-act="rescan" ${busy}>Пересканувати</button>`
+        : `<b>Проект ще не скановано</b>Tintr пройде всі кліпи і знайде шари з тегом _cc-. Результат запам'ятовується, тож наступні підключення будуть миттєві.
+           <button class="btn primary" data-act="rescan" ${busy}>Сканувати проект</button>`;
+    return `<main class="center"><div class="stage"><div class="empty">${body}</div></div></main>`;
+  }
   const k = curKey();
   const m = master(l, k);
   const modes = modesFor(k);

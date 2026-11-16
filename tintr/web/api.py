@@ -227,7 +227,8 @@ class Api:
         if not st["connected"]:
             return st
         st["project"] = {"name": p.path.name, "path": str(p.path), "w": p.width, "h": p.height,
-                         "scannedAt": m.scanned_at, "nextVersion": self._pl._next_version_path().name}
+                         "scannedAt": m.scanned_at, "scanned": bool(m.scanned_at or m.layers),
+                         "nextVersion": self._pl._next_version_path().name}
         clips: dict[int, dict] = {}
         for e in m.layers.values():
             c = clips.setdefault(e.clip_id, {"id": e.clip_id, "pos": e.clip_pos + 1, "name": e.clip_name, "layers": []})
@@ -271,7 +272,7 @@ class Api:
         def run():
             self._pl.connect(rescan=rescan)
             self._remember_project()
-        return self._task("Пересканування проекту" if rescan else "Підключення до TVPaint", run)
+        return self._task("Сканування проекту" if rescan else "Підключення до TVPaint", run)
 
     def export(self) -> dict:
         return self._task("Вивід ключових кадрів", self._pl.export)
