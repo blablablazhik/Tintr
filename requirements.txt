@@ -1,0 +1,8 @@
+pytvpaint==1.1.2
+fal-client
+PySide6
+pillow
+numpy
+scipy
+keyring
+httpx
