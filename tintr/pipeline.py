@@ -268,7 +268,7 @@ class Pipeline:
 
     def estimate_follows(self) -> tuple[int, float]:
         n = len(self.pending_follows())
-        return n, n * self.cfg.vlm_est_cost
+        return n, n * self.cfg.vlm_est_cost_follow
 
     def awaiting_approval(self) -> list[M.LayerEntry]:
         out = []
@@ -309,11 +309,18 @@ class Pipeline:
     def _colorize(self, jobs: list[tuple[M.LayerEntry, M.KeyFrame]]) -> None:
         m = self.manifest
         url_cache = app_dir() / "upload_cache.json"
-        vlm = V.VLMColorizer(get_api_key(), self.cfg.vlm_model, self.cancel, reasoning=self.cfg.vlm_reasoning,
-                             log=self.log, url_cache=url_cache)
+        c = self.cfg
+        # anchor: strong reasoning model; followed keys: fast model (the approved anchor carries the knowledge)
+        vlm_anchor = V.VLMColorizer(get_api_key(), c.vlm_model, self.cancel, reasoning=c.vlm_reasoning,
+                                    log=self.log, url_cache=url_cache)
+        follow_model = c.vlm_model_follow or c.vlm_model
+        vlm_follow = V.VLMColorizer(get_api_key(), follow_model, self.cancel, reasoning=False,
+                                    log=self.log, url_cache=url_cache)
         n_anchor = sum(1 for e, k in jobs if k.idx == e.anchor_idx)
-        self.log(f"VLM {self.cfg.vlm_model}: {n_anchor} anchor(s), {len(jobs) - n_anchor} frame(s)"
-                 + (" · reasoning" if self.cfg.vlm_reasoning else ""))
+        if n_anchor:
+            self.log(f"Якір: {c.vlm_model}" + (" · reasoning" if c.vlm_reasoning else "") + f" · {n_anchor} шт.")
+        if len(jobs) - n_anchor:
+            self.log(f"Кадри за якорем: {follow_model} · {len(jobs) - n_anchor} шт.")
 
         for e, k in jobs:
             self.key_status(e.uid, k.idx, "у черзі")
@@ -328,20 +335,22 @@ class Pipeline:
             rgba = self._key_rgba(e, k)
             try:
                 if k.idx == e.anchor_idx:
-                    mapping, cost, _ = vlm.color_anchor(rgba, regs, Path(e.ref_path), pal, label, status)
+                    model = c.vlm_model
+                    mapping, cost, _ = vlm_anchor.color_anchor(rgba, regs, Path(e.ref_path), pal, label, status)
                 else:
+                    model = follow_model
                     a = e.key(e.anchor_idx)
                     a_regs = self._regions(e, a)
                     a_fill = V.fill(a_regs, e.anchor_approved_mapping, pal)
-                    mapping, cost, _ = vlm.color_follow(rgba, regs, self._key_rgba(e, a), a_regs,
-                                                        e.anchor_approved_mapping, a_fill, Path(e.ref_path), pal,
-                                                        label, status)
+                    mapping, cost, _ = vlm_follow.color_follow(rgba, regs, self._key_rgba(e, a), a_regs,
+                                                               e.anchor_approved_mapping, a_fill, Path(e.ref_path),
+                                                               pal, label, status)
                     k.vlm_anchor_ver = e.anchor_version
             finally:
                 status("")
             k.vlm_mapping = {str(r): mapping.get(str(r), {"part": "?", "color": V.BG}) for r in range(1, regs.n + 1)}
             k.cost = self.cost.record(project=str(self.project.path), clip=e.clip_name, layer=e.layer_name,
-                                      frame=k.start, model=self.cfg.vlm_model, usd=cost)
+                                      frame=k.start, model=model, usd=cost)
             self._write_outputs(e, k)
             m.save()
             return time.time() - t

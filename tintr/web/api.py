@@ -219,7 +219,8 @@ class Api:
         m, p = self._pl.manifest, self._pl.project
         st: dict = {
             "app": f"{APP_NAME} {__version__}", "connected": bool(m and p), "busy": self._busy,
-            "progress": self._progress, "est": self._cfg.vlm_est_cost, "port": self._cfg.rpc_port,
+            "progress": self._progress, "est": self._cfg.vlm_est_cost, "estFollow": self._cfg.vlm_est_cost_follow,
+            "port": self._cfg.rpc_port,
             "apiKey": bool(get_api_key()), "recent": self._recent(), "saveNew": self._cfg.save_as_new_version,
         }
         total, p_usd, p_n = self._pl.cost.totals(str(p.path) if p else None)
@@ -377,7 +378,8 @@ class Api:
     def get_settings(self) -> dict:
         c = self._cfg
         return {"apiKey": get_api_key(), "model": c.vlm_model, "reasoning": c.vlm_reasoning,
-                "concurrency": c.concurrency, "port": c.rpc_port, "est": c.vlm_est_cost}
+                "modelFollow": c.vlm_model_follow, "concurrency": c.concurrency, "port": c.rpc_port,
+                "est": c.vlm_est_cost, "estFollow": c.vlm_est_cost_follow}
 
     def save_settings(self, s: dict) -> dict:
         c = self._cfg
@@ -387,6 +389,8 @@ class Api:
         c.concurrency = max(1, min(16, int(s.get("concurrency") or c.concurrency)))
         c.rpc_port = int(s.get("port") or c.rpc_port)
         c.vlm_est_cost = float(s.get("est") or c.vlm_est_cost)
+        c.vlm_model_follow = (s.get("modelFollow") or c.vlm_model_follow).strip()
+        c.vlm_est_cost_follow = float(s.get("estFollow") or c.vlm_est_cost_follow)
         c.save()
         return {"ok": True, "state": self._state()}
 

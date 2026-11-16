@@ -26,9 +26,13 @@ def app_dir() -> Path:
 class Config:
     rpc_port: int = 3000
     concurrency: int = 4
+    # anchor: the model decides every part alone, so a strong reasoning model pays off (one call per layer)
     vlm_model: str = "google/gemini-3.8-flash"
-    vlm_est_cost: float = 0.07  # rough $ per frame for the estimate; real cost comes from fal usage
-    vlm_reasoning: bool = False  # slower; an unparsable answer is retried with reasoning anyway
+    vlm_est_cost: float = 0.05  # rough $ per anchor for the estimate; real cost comes from fal usage
+    vlm_reasoning: bool = True  # anchor reasoning; models that require it get it anyway
+    # keys that follow the approved anchor: a fast model is as accurate here (bench: 100% vs 100%)
+    vlm_model_follow: str = "anthropic/claude-haiku-5.5"
+    vlm_est_cost_follow: float = 0.002  # rough $ per followed key
     save_as_new_version: bool = True
     last_refs_dir: str = ""
 

@@ -211,6 +211,7 @@ def parse_mapping(text: str) -> dict:
 
 # ------------------------------------------------------------------ client
 URL_TTL = 12 * 3600  # reuse uploaded reference/palette URLs across sessions for this long
+_REASONING_MANDATORY: set[str] = set()  # models fal refuses to run with reasoning off
 
 
 class VLMColorizer:
@@ -222,6 +223,7 @@ class VLMColorizer:
         self.client = fal_client.SyncClient(key=api_key, default_timeout=180.0)
         self.model = model
         self.reasoning = reasoning
+        self.last: dict = {}  # metrics of the last successful request (time, tokens, cost)
         self.cancel = cancel or threading.Event()
         self.log = log or (lambda _s: None)
         self._url_cache_file = url_cache
@@ -291,8 +293,8 @@ class VLMColorizer:
         status = status or (lambda _s: None)
         last = None
         cost_total = 0.0
-        reasoning = self.reasoning
-        for attempt in range(3):
+        reasoning = self.reasoning or self.model in _REASONING_MANDATORY
+        for attempt in range(4):
             if self.cancel.is_set():
                 raise Cancelled()
             t0 = time.time()
@@ -320,6 +322,8 @@ class VLMColorizer:
                 tok = usage.get("completion_tokens")
                 self.log(f"    {label}: VLM {now - t0:.1f}s (черга {q:.1f}s, генерація {now - t0 - q:.1f}s"
                          + (f", {tok} tok" if tok else "") + (", reasoning" if reasoning else "") + ")")
+                self.last = {"seconds": now - t0, "queue": q, "tokens": tok, "prompt_tokens": usage.get("prompt_tokens"),
+                             "reasoning": reasoning, "cost": cost_total, "attempts": attempt + 1}
                 return parse_mapping(res.get("output", "")), cost_total, res.get("output", "")
             except ValueError as e:  # unparsable answer: retry, with reasoning on
                 last = e
@@ -330,6 +334,11 @@ class VLMColorizer:
                 last = e
                 if _is_auth_error(e):
                     raise AuthError(str(e)) from e
+                if not reasoning and "reasoning is mandatory" in str(e).lower():
+                    _REASONING_MANDATORY.add(self.model)  # e.g. gemini-3.8-flash: retry at once, remember
+                    reasoning = True
+                    self.log(f"    {label}: модель {self.model} працює лише з reasoning — повтор")
+                    continue
                 time.sleep(3 * (attempt + 1))
         raise last  # type: ignore[misc]
 

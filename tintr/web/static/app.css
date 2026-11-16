@@ -173,6 +173,7 @@ footer .fbar { width: 160px; }
 .check { display: flex; gap: 10px; align-items: baseline; line-height: 1.5; }
 .check input { accent-color: var(--accent); margin: 0; }
 .cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.cols2 { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 10px; }
 .note-ok { color: var(--ok); font-size: 12px; }
 .note-warn { color: var(--warn); font-size: 12px; }
 

@@ -299,7 +299,7 @@ function groupsView(l) {
   const a = anchor[0];
   const aHint = !a ? "" : l.anchorApproved ? "затверджено" : a.colored ? "чекає затвердження" : "ще не розфарбовано";
   const uDone = uniq.filter((k) => k.colored && k.followed).length;
-  const uHint = !uniq.length ? "" : !l.anchorApproved ? `${uniq.length} · після затвердження якоря ≈ ${money(uniq.length * S.est)}`
+  const uHint = !uniq.length ? "" : !l.anchorApproved ? `${uniq.length} · після затвердження якоря ≈ ${money(uniq.length * S.estFollow)}`
     : uDone === uniq.length ? "усі готові" : `${uDone} з ${uniq.length} готово`;
   const group = (title, hint, keys) => keys.length ? `<div class="group"><div class="group-head"><span class="eyebrow">${title}</span><span class="hint">${esc(hint)}</span></div>
     <div class="group-keys">${keys.map((k) => kfHtml(l, k)).join("")}</div></div>` : "";
@@ -373,7 +373,7 @@ function actionView(l) {
         <button class="btn primary" data-act="approve" ${dis}>Затвердити</button></div>`;
     case "frames":
       return `<b>Кадри за якорем</b><p>Якір #${a.idx} затверджено. ${l.followsN} унікальних кадр(ів) розфарбуються за ним, повтори отримають колір автоматично.</p>
-        <button class="btn primary" data-act="follows" ${dis}>Розфарбувати ${l.followsN} кадр(ів) · ~${money(l.followsN * S.est)}</button>`;
+        <button class="btn primary" data-act="follows" ${dis}>Розфарбувати ${l.followsN} кадр(ів) · ~${money(l.followsN * S.estFollow)}</button>`;
     case "ready":
       return `<b>Усі кадри готові</b><p>${l.total} кадр(ів) розфарбовано. Можна вставляти в TVPaint.</p>
         <button class="btn primary" data-act="view" data-view="insert">До вставки</button>`;
@@ -475,7 +475,7 @@ async function onClick(e) {
     case "follows": {
       const n = layers().reduce((s, x) => s + (x.stage === "frames" ? x.followsN : 0), 0);
       const names = layers().filter((x) => x.stage === "frames").map((x) => x.name).join(", ");
-      if (await confirmCost(`Gemini розфарбує ${n} кадр(ів) за затвердженими якорями (${names}).`, n * S.est)) call("colorize_follows");
+      if (await confirmCost(`Gemini розфарбує ${n} кадр(ів) за затвердженими якорями (${names}).`, n * S.estFollow)) call("colorize_follows");
       break;
     }
     case "stop": call("stop"); break;
@@ -547,11 +547,18 @@ async function openSettings() {
       <input id="s-key" type="password" value="${esc(s.apiKey)}" placeholder="зберігається у Windows Credential Manager">
       <button class="btn" id="s-show" type="button">Показати</button><button class="btn" id="s-check" type="button">Перевірити</button></div>
       <span id="s-note"></span></div>
-    <div class="field"><label for="s-model">Модель Gemini (fal openrouter/router/vision)</label><input id="s-model" type="text" value="${esc(s.model)}"></div>
-    <label class="check"><input id="s-reason" type="checkbox" ${s.reasoning ? "checked" : ""}><span>Глибокий аналіз (reasoning): точніше, але помітно довше. Без нього нерозібрана відповідь сама повторюється з reasoning.</span></label>
-    <div class="cols">
+    <div class="cols2">
+      <div class="field"><label for="s-model">Модель для якоря</label><input id="s-model" type="text" value="${esc(s.model)}"></div>
+      <div class="field"><label for="s-est">Оцінка $ за якір</label><input id="s-est" type="number" step="0.01" value="${s.est}"></div>
+    </div>
+    <label class="check"><input id="s-reason" type="checkbox" ${s.reasoning ? "checked" : ""}><span>Reasoning для якоря: модель сама розбирає неоднозначні місця. Довше, але точніше.</span></label>
+    <div class="cols2">
+      <div class="field"><label for="s-model-f">Модель для кадрів за якорем</label><input id="s-model-f" type="text" value="${esc(s.modelFollow)}"></div>
+      <div class="field"><label for="s-est-f">Оцінка $ за кадр</label><input id="s-est-f" type="number" step="0.001" value="${s.estFollow}"></div>
+    </div>
+    <span style="color:var(--muted);font-size:12px;line-height:1.5">Моделі fal openrouter/router/vision. Кадри за якорем ідуть без reasoning: зразок уже є, тому швидка модель працює так само точно.</span>
+    <div class="cols2">
       <div class="field"><label for="s-conc">Паралельних запитів</label><input id="s-conc" type="number" min="1" max="16" value="${s.concurrency}"></div>
-      <div class="field"><label for="s-est">Оцінка $ за кадр</label><input id="s-est" type="number" step="0.01" value="${s.est}"></div>
       <div class="field"><label for="s-port">Порт TVPaint</label><input id="s-port" type="number" value="${s.port}"></div>
     </div>
     <div class="actions"><button class="btn" id="s-cancel">Скасувати</button><button class="btn primary" id="s-save">Зберегти</button></div></div>`);
@@ -566,6 +573,7 @@ async function openSettings() {
     await call("save_settings", {
       apiKey: $("#s-key").value, model: $("#s-model").value, reasoning: $("#s-reason").checked,
       concurrency: +$("#s-conc").value, est: +$("#s-est").value, port: +$("#s-port").value,
+      modelFollow: $("#s-model-f").value, estFollow: +$("#s-est-f").value,
     });
     closeModal();
   };
