@@ -5,7 +5,7 @@ Layout next to the project:
         manifest.json
         <clip_folder>/<layer_folder>/
             keys/     exported key frames (RGBA line-art)
-            regions/  key frames with numbered regions (what the VLM sees)
+            regions/  key frames with numbered regions (what the VLM sees) + <key>.npz region maps
             color/    flat colour fills (what goes into TVPaint)
 """
 
@@ -61,6 +61,7 @@ class LayerEntry:
     anchor_approved: bool = False
     anchor_version: int = 0
     anchor_approved_mapping: dict = field(default_factory=dict)
+    missing: bool = False  # cached layer not found in TVPaint any more (rescan needed)
     keys: list[KeyFrame] = field(default_factory=list)
 
     @property
@@ -87,6 +88,7 @@ class Manifest:
         self.root = self.project_path.parent / f"{fs_safe(stem)}_tintr"
         self.file = self.root / "manifest.json"
         self.layers: dict[str, LayerEntry] = {}
+        self.scanned_at = ""  # ISO time of the last full project scan
         self._lock = threading.RLock()
 
     # ---------- paths ----------
@@ -107,6 +109,7 @@ class Manifest:
         m = cls(project_path)
         if m.file.exists():
             data = json.loads(m.file.read_text(encoding="utf-8"))
+            m.scanned_at = data.get("scanned_at", "")
             for uid, le in data.get("layers", {}).items():
                 keys = []
                 for kd in le.pop("keys", []):
@@ -122,6 +125,7 @@ class Manifest:
             self.root.mkdir(parents=True, exist_ok=True)
             data = {
                 "project": str(self.project_path),
+                "scanned_at": self.scanned_at,
                 "layers": {uid: asdict(e) for uid, e in self.layers.items()},
             }
             tmp = self.file.with_suffix(".tmp")

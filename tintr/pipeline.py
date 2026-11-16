@@ -1,7 +1,7 @@
 """Pipeline orchestration — UI independent. TVPaint calls happen on the calling thread only.
 
-scan → export keys → VLM colours the anchor → user approves → VLM colours the other keys
-following the anchor → inject colour layers into TVPaint and save.
+connect (cached scan) → export keys (+ regions, free) → VLM colours the anchor → user approves →
+VLM colours the other keys following the anchor → insert colour layers into TVPaint and save.
 """
 
 from __future__ import annotations
@@ -10,7 +10,9 @@ import hashlib
 import json
 import shutil
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
@@ -18,7 +20,7 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage as ndi
 
-from tintr.config import Config, get_api_key
+from tintr.config import Config, app_dir, get_api_key
 from tintr.core import manifest as M
 from tintr.core import vlm as V
 from tintr.core.cost import CostTracker
@@ -42,14 +44,36 @@ class Pipeline:
         self.project: bridge.ProjectInfo | None = None
         self.manifest: M.Manifest | None = None
         self._reg_cache: dict = {}
+        # live per-key status for the UI: (layer uid, key idx, text or "" when finished)
+        self.key_status: Callable[[str, int, str], None] = lambda *_: None
 
-    # ------------------------------------------------------------------ scan
-    def connect_and_scan(self) -> list[M.LayerEntry]:
+    # ------------------------------------------------------------------ connect / scan
+    def connect(self, rescan: bool = False) -> list[M.LayerEntry]:
+        """Connect and load the layer list from manifest.json; full project scan only when needed."""
+        t = time.time()
         bridge.connect(self.cfg.rpc_port)
         self.project = bridge.current_project()
         self.log(f"Project: {self.project.path}  ({self.project.width}x{self.project.height})")
         self.manifest = M.Manifest.load(self.project.path)
-        self.log("Scanning clips for '_сс-' / '_cc-' layers…")
+        if rescan or not self.manifest.layers:
+            return self.rescan()
+        missing = []
+        for e in self.manifest.layers.values():
+            e.missing = bridge.layer_name(e.clip_id, e.layer_id) is None
+            if e.missing:
+                missing.append(e.layer_name)
+        self._restore_outputs()
+        self.manifest.save()
+        when = self.manifest.scanned_at.replace("T", " ")[:16]
+        self.log(f"З кешу: {len(self.manifest.layers)} шар(ів)" + (f", скан від {when}" if when else "")
+                 + f" ({time.time() - t:.1f}s). Нові шари з тегом — «Пересканувати».")
+        if missing:
+            self.log("  ⚠ не знайдено в TVPaint: " + ", ".join(missing) + " — потрібне пересканування")
+        return list(self.manifest.layers.values())
+
+    def rescan(self) -> list[M.LayerEntry]:
+        t = time.time()
+        self.log("Scanning all clips for '_сс-' / '_cc-' layers…")
         found = bridge.scan(self.log)
         old = self.manifest.layers
         new: dict[str, M.LayerEntry] = {}
@@ -65,20 +89,26 @@ class Pipeline:
                 for attr in ("ref_path", "color_layer_id", "enabled", "anchor_idx", "anchor_approved",
                              "anchor_version", "anchor_approved_mapping"):
                     setattr(e, attr, getattr(prev, attr))
-            prev_keys = {k.start: k for k in prev.keys} if prev else {}
-            for i, (start, length) in enumerate(f.instances, 1):
-                pk = prev_keys.get(start)
-                if pk:
-                    pk.idx, pk.length = i, length
-                    e.keys.append(pk)
-                else:
-                    e.keys.append(M.KeyFrame(idx=i, start=start, length=length, status=""))
+                e.keys = prev.keys
+            self._merge_keys(e, f.instances)
             new[uid] = e
         self.manifest.layers = new
+        self.manifest.scanned_at = datetime.now().isoformat(timespec="seconds")
         self._restore_outputs()
         self.manifest.save()
-        self.log(f"Found {len(new)} tagged layer(s).")
+        self.log(f"Found {len(new)} tagged layer(s) in {time.time() - t:.1f}s.")
         return list(new.values())
+
+    @staticmethod
+    def _merge_keys(e: M.LayerEntry, instances: list[tuple[int, int]]) -> None:
+        """Re-time the layer's keys from TVPaint instances, keeping per-key state matched by start frame."""
+        prev = {k.start: k for k in e.keys}
+        keys = []
+        for i, (start, length) in enumerate(instances, 1):
+            k = prev.get(start) or M.KeyFrame(idx=i, start=start, length=length, status="")
+            k.idx, k.length = i, length
+            keys.append(k)
+        e.keys = keys
 
     def _restore_outputs(self) -> None:
         """Re-create colour files from saved VLM answers if they're missing (free, local)."""
@@ -92,46 +122,87 @@ class Pipeline:
         self.propagate_duplicates()
 
     def entries(self) -> list[M.LayerEntry]:
-        return [e for e in self.manifest.layers.values() if e.enabled] if self.manifest else []
+        return [e for e in self.manifest.layers.values() if e.enabled and not e.missing] if self.manifest else []
 
     # ---------------------------------------------------------------- export
     def export(self) -> None:
+        """Export key frames — one TVPaint call per clip, then find regions locally (no requests)."""
         m = self.manifest
         entries = self.entries()
-        total = sum(len(e.keys) for e in entries)
-        n = 0
+        by_clip: dict[int, list[M.LayerEntry]] = {}
         for e in entries:
+            by_clip.setdefault(e.clip_id, []).append(e)
+        t = time.time()
+        for n, (clip_id, es) in enumerate(by_clip.items(), 1):
             if self.cancel.is_set():
                 raise Cancelled()
-            self.progress(n, total, f"Rendering keys of {e.layer_name}…")
-            tmp = m.layer_dir(e) / "_render_tmp"
-            batch = bridge.export_layer_keys(e.clip_id, e.layer_id, [k.start for k in e.keys], tmp)
-            for k in e.keys:
-                if self.cancel.is_set():
-                    raise Cancelled()
-                n += 1
-                base = key_basename(e.clip_folder, e.layer_folder, k.idx, k.start)
-                out = m.sub(e, "keys") / f"{base}.png"
-                self.progress(n, total, f"Export {e.layer_name} frame {k.start}")
-                if k.start in batch:
-                    shutil.move(batch[k.start], out)
+            self.progress(n - 1, len(by_clip), f"Export clip #{es[0].clip_pos + 1} ({len(es)} layer(s))…")
+            tmp = m.root / "_export_tmp"
+            try:
+                res = bridge.export_clip_keys(clip_id, [e.layer_id for e in es], tmp)
+            except Exception as ex:  # noqa: BLE001
+                self.log(f"  ⚠ clip export failed ({ex}) — slow per-frame fallback")
+                res = {}
+            for e in es:
+                if e.layer_id in res:
+                    self._merge_keys(e, [(s, ln) for s, ln, _ in res[e.layer_id]])
+                    files = {s: f for s, _, f in res[e.layer_id]}
                 else:
-                    bridge.export_key(e.clip_id, e.layer_id, k.start, out)
-                h = pixel_hash(out)
-                if k.hash and k.hash != h:
-                    self.log(f"  key {k.idx} (frame {k.start}) changed since last run → will be recoloured")
-                    k.status, k.regions_file, k.color_file, k.vlm_mapping = M.EXPORTED, "", "", {}
-                    if e.anchor_idx == k.idx:
-                        e.anchor_approved = False
-                k.hash, k.key_file = h, f"keys/{base}.png"
-                if not k.status:
-                    k.status = M.EXPORTED
+                    files = bridge.export_layer_keys_slow(e.clip_id, e.layer_id, [k.start for k in e.keys],
+                                                          m.layer_dir(e) / "_render_tmp")
+                self._store_keys(e, files)
+                shutil.rmtree(m.layer_dir(e) / "_render_tmp", ignore_errors=True)
             shutil.rmtree(tmp, ignore_errors=True)
+        self.log(f"  exported in {time.time() - t:.1f}s")
         for e in entries:
             assign_duplicates(e.keys)
             d = sum(1 for k in e.keys if k.dup_of is not None)
             self.log(f"  {e.layer_name}: {len(e.keys)} keys, {len(e.keys) - d} unique, {d} repeat(s)")
         m.save()
+        self.prepare_regions(entries)
+
+    def _store_keys(self, e: M.LayerEntry, files: dict[int, Path]) -> None:
+        m = self.manifest
+        for k in e.keys:
+            base = key_basename(e.clip_folder, e.layer_folder, k.idx, k.start)
+            out = m.sub(e, "keys") / f"{base}.png"
+            src = files.get(k.start)
+            if src is None or not Path(src).exists():
+                k.status, k.error = M.FAILED, "TVPaint did not export this key"
+                continue
+            shutil.move(src, out)
+            h = pixel_hash(out)
+            if k.hash and k.hash != h:
+                self.log(f"  key {k.idx} (frame {k.start}) changed since last run → will be recoloured")
+                k.status, k.regions_file, k.color_file, k.vlm_mapping = M.EXPORTED, "", "", {}
+                if e.anchor_idx == k.idx:
+                    e.anchor_approved = False
+            k.hash, k.key_file = h, f"keys/{base}.png"
+            if not k.status or k.status == M.FAILED:
+                k.status, k.error = M.EXPORTED, ""
+
+    def prepare_regions(self, entries: list[M.LayerEntry] | None = None) -> None:
+        """Find regions of every unique key ahead of colouring (cached on disk) — the paid step starts at once."""
+        jobs = [(e, k) for e in (entries or self.entries()) for k in e.masters() if k.key_file]
+        if not jobs:
+            return
+        t = time.time()
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futs = [pool.submit(self._prepare_one, e, k) for e, k in jobs]
+            for n, f in enumerate(as_completed(futs), 1):
+                f.result()
+                self.progress(n, len(jobs), f"Regions {n}/{len(jobs)}")
+        self.propagate_duplicates()
+        self.manifest.save()
+        self.log(f"  regions ready for {len(jobs)} key(s) in {time.time() - t:.1f}s")
+
+    def _prepare_one(self, e: M.LayerEntry, k: M.KeyFrame) -> None:
+        regs = self._regions(e, k)
+        base = Path(k.key_file).stem
+        rel = f"regions/{base}_regions.png"
+        if k.regions_file != rel or not self.manifest.abs(e, rel).exists():
+            V.annotate(V._on_white(self._key_rgba(e, k)), regs).save(self.manifest.sub(e, "regions") / f"{base}_regions.png")
+            k.regions_file = rel
 
     # --------------------------------------------------------------- regions
     def _key_rgba(self, e: M.LayerEntry, k: M.KeyFrame) -> np.ndarray:
@@ -140,7 +211,12 @@ class Pipeline:
     def _regions(self, e: M.LayerEntry, k: M.KeyFrame) -> V.Regions:
         ck = (e.uid, k.idx, k.hash)
         if ck not in self._reg_cache:
-            self._reg_cache[ck] = V.find_regions(self._key_rgba(e, k))
+            path = self.manifest.sub(e, "regions") / f"{Path(k.key_file).stem}.npz"
+            regs = V.load_regions(path, k.hash)
+            if regs is None:
+                regs = V.find_regions(self._key_rgba(e, k))
+                V.save_regions(regs, path, k.hash)
+            self._reg_cache[ck] = regs
         return self._reg_cache[ck]
 
     def _write_outputs(self, e: M.LayerEntry, k: M.KeyFrame) -> None:
@@ -149,9 +225,10 @@ class Pipeline:
         pal = reference_palette(Path(e.ref_path))
         regs = self._regions(e, k)
         base = Path(k.key_file).stem
-        V.annotate(V._on_white(self._key_rgba(e, k)), regs).save(m.sub(e, "regions") / f"{base}_regions.png")
+        if not (k.regions_file and m.abs(e, k.regions_file).exists()):
+            V.annotate(V._on_white(self._key_rgba(e, k)), regs).save(m.sub(e, "regions") / f"{base}_regions.png")
+            k.regions_file = f"regions/{base}_regions.png"
         V.fill(regs, k.vlm_mapping, pal).save(m.sub(e, "color") / f"{base}_color.png")
-        k.regions_file = f"regions/{base}_regions.png"
         k.color_file = f"color/{base}_color.png"
         k.status, k.error = M.COLORED, ""
 
@@ -164,25 +241,30 @@ class Pipeline:
             e.anchor_idx = masters[0].idx
         return e.key(e.anchor_idx)
 
-    def pending(self) -> list[tuple[M.LayerEntry, M.KeyFrame]]:
-        """Keys a VLM call would be made for now: anchors first, other keys only after approval."""
+    def pending_anchors(self, only_uid: str | None = None, force: bool = False) -> list[tuple[M.LayerEntry, M.KeyFrame]]:
+        out = []
+        for e in self.entries():
+            if only_uid and e.uid != only_uid:
+                continue
+            a = self.anchor_key(e)
+            if a and (force or not a.vlm_mapping):
+                out.append((e, a))
+        return out
+
+    def pending_follows(self) -> list[tuple[M.LayerEntry, M.KeyFrame]]:
+        """Non-anchor keys of layers whose anchor is approved and that weren't coloured with that anchor."""
         out = []
         for e in self.entries():
             a = self.anchor_key(e)
-            if a is None:
-                continue
-            if not a.vlm_mapping:
-                out.append((e, a))
-                continue
-            if not e.anchor_approved:
+            if not (a and a.vlm_mapping and e.anchor_approved):
                 continue
             for k in e.masters():
                 if k.idx != a.idx and k.key_file and (not k.vlm_mapping or k.vlm_anchor_ver != e.anchor_version):
                     out.append((e, k))
         return out
 
-    def estimate(self) -> tuple[int, float]:
-        n = len(self.pending())
+    def estimate_follows(self) -> tuple[int, float]:
+        n = len(self.pending_follows())
         return n, n * self.cfg.vlm_est_cost
 
     def awaiting_approval(self) -> list[M.LayerEntry]:
@@ -193,42 +275,74 @@ class Pipeline:
                 out.append(e)
         return out
 
-    def colorize(self) -> None:
-        m = self.manifest
-        missing = [e.layer_name for e in self.entries() if not (e.ref_path and Path(e.ref_path).exists())]
+    def _check_refs(self, entries) -> None:
+        missing = [e.layer_name for e in entries if not (e.ref_path and Path(e.ref_path).exists())]
         if missing:
             raise ValueError("Character reference missing for: " + ", ".join(missing))
-        todo = self.pending()
+
+    def colorize_anchors(self, only_uid: str | None = None, force: bool = False) -> None:
+        """Colour only the anchor key (of one layer, or of every layer that has none yet)."""
+        todo = self.pending_anchors(only_uid, force)
+        self._check_refs({e.uid: e for e, _ in todo}.values())
+        if not todo:
+            self.log("Якорі вже розфарбовано.")
+            return
+        for e, a in todo:
+            if force:
+                e.anchor_approved = False
+        self._colorize(todo)
+
+    def colorize_follows(self) -> None:
+        """Colour the remaining keys of every layer with an approved anchor."""
+        todo = self.pending_follows()
+        self._check_refs({e.uid: e for e, _ in todo}.values())
         if not todo:
             waiting = [e.layer_name for e in self.awaiting_approval()]
-            self.log(("Waiting for anchor approval: " + ", ".join(waiting)) if waiting else "Nothing to colour.")
+            self.log(("Чекають затвердження якоря: " + ", ".join(waiting)) if waiting else "Нічого розфарбовувати.")
             self.propagate_duplicates()
             return
-        vlm = V.VLMColorizer(get_api_key(), self.cfg.vlm_model, self.cancel)
-        anchors = [(e, k) for e, k in todo if k.idx == e.anchor_idx]
-        follows = [(e, k) for e, k in todo if k.idx != e.anchor_idx]
-        self.log(f"VLM {self.cfg.vlm_model}: {len(anchors)} anchor(s), {len(follows)} frame(s)")
+        self._colorize(todo)
+
+    def _colorize(self, jobs: list[tuple[M.LayerEntry, M.KeyFrame]]) -> None:
+        m = self.manifest
+        url_cache = app_dir() / "upload_cache.json"
+        vlm = V.VLMColorizer(get_api_key(), self.cfg.vlm_model, self.cancel, reasoning=self.cfg.vlm_reasoning,
+                             log=self.log, url_cache=url_cache)
+        n_anchor = sum(1 for e, k in jobs if k.idx == e.anchor_idx)
+        self.log(f"VLM {self.cfg.vlm_model}: {n_anchor} anchor(s), {len(jobs) - n_anchor} frame(s)"
+                 + (" · reasoning" if self.cfg.vlm_reasoning else ""))
+
+        for e, k in jobs:
+            self.key_status(e.uid, k.idx, "у черзі")
 
         def run(e: M.LayerEntry, k: M.KeyFrame):
+            label = f"{e.layer_name} #{k.idx}"
+            t = time.time()
+            status = lambda s, _u=e.uid, _i=k.idx: self.key_status(_u, _i, s)  # noqa: E731
+            status("підготовка")
             pal = reference_palette(Path(e.ref_path))
             regs = self._regions(e, k)
             rgba = self._key_rgba(e, k)
-            if k.idx == e.anchor_idx:
-                mapping, cost, _ = vlm.color_anchor(rgba, regs, Path(e.ref_path), pal)
-            else:
-                a = e.key(e.anchor_idx)
-                a_regs = self._regions(e, a)
-                a_fill = V.fill(a_regs, e.anchor_approved_mapping, pal)
-                mapping, cost, _ = vlm.color_follow(rgba, regs, self._key_rgba(e, a), a_regs,
-                                                    e.anchor_approved_mapping, a_fill, Path(e.ref_path), pal)
-                k.vlm_anchor_ver = e.anchor_version
+            try:
+                if k.idx == e.anchor_idx:
+                    mapping, cost, _ = vlm.color_anchor(rgba, regs, Path(e.ref_path), pal, label, status)
+                else:
+                    a = e.key(e.anchor_idx)
+                    a_regs = self._regions(e, a)
+                    a_fill = V.fill(a_regs, e.anchor_approved_mapping, pal)
+                    mapping, cost, _ = vlm.color_follow(rgba, regs, self._key_rgba(e, a), a_regs,
+                                                        e.anchor_approved_mapping, a_fill, Path(e.ref_path), pal,
+                                                        label, status)
+                    k.vlm_anchor_ver = e.anchor_version
+            finally:
+                status("")
             k.vlm_mapping = {str(r): mapping.get(str(r), {"part": "?", "color": V.BG}) for r in range(1, regs.n + 1)}
             k.cost = self.cost.record(project=str(self.project.path), clip=e.clip_name, layer=e.layer_name,
                                       frame=k.start, model=self.cfg.vlm_model, usd=cost)
             self._write_outputs(e, k)
             m.save()
+            return time.time() - t
 
-        jobs = anchors + follows
         done = 0
         with ThreadPoolExecutor(max_workers=max(1, int(self.cfg.concurrency))) as pool:
             futs = {pool.submit(run, e, k): (e, k) for e, k in jobs}
@@ -236,9 +350,9 @@ class Pipeline:
                 e, k = futs[f]
                 done += 1
                 try:
-                    f.result()
-                    tag = "  ← ANCHOR: review and approve" if k.idx == e.anchor_idx else ""
-                    self.log(f"  ✓ {e.layer_name} key {k.idx} (frame {k.start}) ${k.cost:.3f}{tag}")
+                    dt = f.result()
+                    tag = "  ← ЯКІР: перевірте і затвердіть" if k.idx == e.anchor_idx else ""
+                    self.log(f"  ✓ {e.layer_name} key {k.idx} (frame {k.start}) ${k.cost:.3f} · {dt:.0f}s{tag}")
                 except Cancelled:
                     pass
                 except AuthError as ex:
@@ -314,44 +428,54 @@ class Pipeline:
                 if k.dup_of is None or not k.key_file:
                     continue
                 master = e.key(k.dup_of)
-                if not (master.color_file and m.abs(e, master.color_file).exists()):
-                    continue
                 base = Path(k.key_file).stem
                 for kind, src_rel, attr, suffix in (("regions", master.regions_file, "regions_file", "_regions.png"),
                                                     ("color", master.color_file, "color_file", "_color.png")):
                     if src_rel and m.abs(e, src_rel).exists():
                         shutil.copyfile(m.abs(e, src_rel), m.sub(e, kind) / f"{base}{suffix}")
                         setattr(k, attr, f"{kind}/{base}{suffix}")
-                k.vlm_mapping, k.status, k.cost = dict(master.vlm_mapping), M.COLORED, 0.0
+                if master.color_file and m.abs(e, master.color_file).exists():
+                    k.vlm_mapping, k.status, k.cost = dict(master.vlm_mapping), M.COLORED, 0.0
         m.save()
 
     # ----------------------------------------------------------------- inject
-    def inject(self) -> Path:
+    def is_ready(self, e: M.LayerEntry) -> bool:
         m = self.manifest
-        ready = [e for e in self.entries()
-                 if e.keys and all(k.color_file and m.abs(e, k.color_file).exists() for k in e.keys)]
-        skipped = [e.layer_name for e in self.entries() if e not in ready]
+        return bool(e.keys) and all(k.color_file and m.abs(e, k.color_file).exists() for k in e.keys)
+
+    def inject(self, uids: list[str] | None = None, save: str = "") -> Path | None:
+        """Insert colour layers. `save`: "new" (next _tintr_vNN), "overwrite", "none"; "" = config default."""
+        m = self.manifest
+        pool = [e for e in self.entries() if uids is None or e.uid in uids]
+        ready = [e for e in pool if self.is_ready(e)]
+        skipped = [e.layer_name for e in pool if e not in ready]
         if skipped:
             self.log("  skipped (not all keys coloured): " + ", ".join(skipped))
         if not ready:
             raise ValueError("No layer is fully coloured yet.")
-        total = sum(len(e.keys) for e in ready)
-        n = 0
-        for e in ready:
-            e.color_layer_id = bridge.ensure_color_layer(e.clip_id, e.layer_id, e.color_layer_id, self.log)
-            m.save()
+        t = time.time()
+        size = (self.project.width, self.project.height)
+        for n, e in enumerate(ready, 1):
+            if self.cancel.is_set():
+                raise Cancelled()
+            self.progress(n - 1, len(ready), f"Insert {e.layer_name}…")
+            keys = [(k.start, k.length, m.abs(e, k.color_file)) for k in e.keys]
+            e.color_layer_id = bridge.insert_color_layer(e.clip_id, e.layer_id, e.color_layer_id, keys,
+                                                         m.root / "_insert_tmp", size, self.log)
             for k in e.keys:
-                if self.cancel.is_set():
-                    raise Cancelled()
-                n += 1
-                self.progress(n, total, f"Insert {e.layer_name} frame {k.start}")
-                bridge.load_frame(e.clip_id, e.color_layer_id, k.start, k.length, m.abs(e, k.color_file))
                 k.status = M.INJECTED
             m.save()
-        target = self._next_version_path() if self.cfg.save_as_new_version else None
+        self.progress(len(ready), len(ready), "Inserted")
+        self.log(f"  inserted {len(ready)} layer(s) in {time.time() - t:.1f}s")
+        save = save or ("new" if self.cfg.save_as_new_version else "overwrite")
+        if save == "none":
+            self.log("Project not saved — review it in TVPaint and save there.")
+            return None
+        target = self._next_version_path() if save == "new" else None
         self.log(f"Saving project → {target or self.project.path} (this can take a while)…")
+        t = time.time()
         saved = bridge.save_project(target)
-        self.log(f"Saved: {saved}")
+        self.log(f"Saved: {saved} ({time.time() - t:.0f}s)")
         return saved
 
     def _next_version_path(self) -> Path:

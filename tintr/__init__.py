@@ -1,4 +1,4 @@
-"""Tintr — AI colorization of TVPaint key frames via fal.ai Ideogram v4.5 Edit."""
+"""Tintr — AI colorization of TVPaint key frames (Gemini picks palette colours, code fills regions)."""
 
 APP_NAME = "Tintr"
-__version__ = "0.1.0"
+__version__ = "0.2.0"

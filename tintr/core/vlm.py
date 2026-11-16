@@ -8,13 +8,16 @@ part gets the same colour on every key.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import fal_client
 import numpy as np
@@ -71,6 +74,25 @@ def find_regions(key_rgba: np.ndarray, gap_close_px: int = 3, min_share: float =
         y, x = np.unravel_index(dt.argmax(), dt.shape)
         pts[i] = (int(x + sl[1].start), int(y + sl[0].start), float(dt.max()))
     return Regions(reg, len(big), pts)
+
+
+def save_regions(regions: Regions, path: Path, tag: str) -> None:
+    """Cache a region map on disk (find_regions takes seconds on a 3K frame). `tag` = key pixel hash."""
+    pts = np.array([(i, x, y, r) for i, (x, y, r) in regions.points.items()], np.float64).reshape(-1, 4)
+    tmp = path.with_name(path.stem + ".tmp.npz")
+    np.savez_compressed(tmp, reg=regions.reg.astype(np.int32), n=regions.n, pts=pts, tag=tag)
+    tmp.replace(path)
+
+
+def load_regions(path: Path, tag: str) -> Regions | None:
+    try:
+        with np.load(path) as d:
+            if str(d["tag"]) != tag:
+                return None
+            pts = {int(i): (int(x), int(y), float(r)) for i, x, y, r in d["pts"]}
+            return Regions(d["reg"], int(d["n"]), pts)
+    except Exception:  # noqa: BLE001 — missing / stale / corrupt cache
+        return None
 
 
 def _font(sz: int):
@@ -188,15 +210,46 @@ def parse_mapping(text: str) -> dict:
 
 
 # ------------------------------------------------------------------ client
+URL_TTL = 12 * 3600  # reuse uploaded reference/palette URLs across sessions for this long
+
+
 class VLMColorizer:
-    def __init__(self, api_key: str, model: str, cancel: threading.Event | None = None):
+    def __init__(self, api_key: str, model: str, cancel: threading.Event | None = None,
+                 reasoning: bool = False, log: Callable[[str], None] | None = None,
+                 url_cache: Path | None = None):
         if not api_key:
             raise AuthError("fal.ai API key is not set (Settings).")
         self.client = fal_client.SyncClient(key=api_key, default_timeout=180.0)
         self.model = model
+        self.reasoning = reasoning
         self.cancel = cancel or threading.Event()
+        self.log = log or (lambda _s: None)
+        self._url_cache_file = url_cache
         self._cache: dict[str, str] = {}
         self._lock = threading.Lock()
+        self._pool = ThreadPoolExecutor(max_workers=6)
+        self._load_url_cache()
+
+    def _load_url_cache(self) -> None:
+        if not (self._url_cache_file and self._url_cache_file.exists()):
+            return
+        try:
+            data = json.loads(self._url_cache_file.read_text(encoding="utf-8"))
+            now = time.time()
+            self._cache = {k: v["url"] for k, v in data.items() if now - v.get("t", 0) < URL_TTL}
+        except Exception:  # noqa: BLE001
+            self._cache = {}
+
+    def _store_url(self, key: str, url: str) -> None:
+        if not self._url_cache_file:
+            return
+        try:
+            f = self._url_cache_file
+            data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+            data[key] = {"url": url, "t": time.time()}
+            f.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        except Exception:  # noqa: BLE001 — the cache is an optimisation only
+            pass
 
     def check_key(self) -> None:
         """Cheap auth check: upload a 1x1 png to fal storage (free)."""
@@ -213,25 +266,66 @@ class VLMColorizer:
                 if cache_key in self._cache:
                     return self._cache[cache_key]
         buf = io.BytesIO()
-        im.save(buf, "PNG")
-        url = self.client.upload(buf.getvalue(), "image/png", file_name=name)
+        if name.endswith(".jpg"):  # line-art on white: several times smaller than PNG
+            im.convert("RGB").save(buf, "JPEG", quality=92)
+            mime = "image/jpeg"
+        else:
+            im.save(buf, "PNG")
+            mime = "image/png"
+        url = self.client.upload(buf.getvalue(), mime, file_name=name)
         if cache_key:
             with self._lock:
                 self._cache[cache_key] = url
+                self._store_url(cache_key, url)
         return url
 
-    def _ask(self, prompt: str, urls: list[str]) -> tuple[dict, float, str]:
+    def _upload_all(self, items: list, label: str = "") -> list[str]:
+        """Upload in parallel; an item is (image, name[, cache_key]) or an already known URL."""
+        t = time.time()
+        futs = [None if isinstance(it, str) else self._pool.submit(self._upload, *it) for it in items]
+        urls = [it if f is None else f.result() for it, f in zip(items, futs)]
+        self.log(f"    {label}: upload {time.time() - t:.1f}s")
+        return urls
+
+    def _ask(self, prompt: str, urls: list[str], label: str = "", status=None) -> tuple[dict, float, str]:
+        status = status or (lambda _s: None)
         last = None
+        cost_total = 0.0
+        reasoning = self.reasoning
         for attempt in range(3):
             if self.cancel.is_set():
                 raise Cancelled()
+            t0 = time.time()
+            started: list[float] = []
+            queued: list[int] = []
+
+            def on_update(st, _started=started, _queued=queued):
+                if isinstance(st, fal_client.Queued) and st.position > 0 and st.position not in _queued:
+                    _queued.append(st.position)
+                    self.log(f"    {label}: у черзі fal #{st.position}")
+                    status(f"черга fal #{st.position}")
+                elif isinstance(st, fal_client.InProgress) and not _started:
+                    _started.append(time.time())
+                    status("генерується")
+
             try:
                 res = self.client.subscribe(ENDPOINT, arguments={
                     "model": self.model, "prompt": prompt, "image_urls": urls,
-                    "temperature": 0, "max_tokens": 16000, "reasoning": True,
-                }, client_timeout=600)
-                cost = float((res.get("usage") or {}).get("cost") or 0)
-                return parse_mapping(res.get("output", "")), cost, res.get("output", "")
+                    "temperature": 0, "max_tokens": 8000, "reasoning": reasoning,
+                }, client_timeout=600, on_queue_update=on_update)
+                usage = res.get("usage") or {}
+                cost_total += float(usage.get("cost") or 0)
+                now = time.time()
+                q = (started[0] - t0) if started else 0.0
+                tok = usage.get("completion_tokens")
+                self.log(f"    {label}: VLM {now - t0:.1f}s (черга {q:.1f}s, генерація {now - t0 - q:.1f}s"
+                         + (f", {tok} tok" if tok else "") + (", reasoning" if reasoning else "") + ")")
+                return parse_mapping(res.get("output", "")), cost_total, res.get("output", "")
+            except ValueError as e:  # unparsable answer: retry, with reasoning on
+                last = e
+                if not reasoning:
+                    reasoning = True
+                    self.log(f"    {label}: відповідь не розібрано — повтор з reasoning")
             except Exception as e:  # noqa: BLE001
                 last = e
                 if _is_auth_error(e):
@@ -239,23 +333,37 @@ class VLMColorizer:
                 time.sleep(3 * (attempt + 1))
         raise last  # type: ignore[misc]
 
-    def _ref_urls(self, ref_path: Path, pal: np.ndarray) -> tuple[str, str]:
-        ref = Image.open(ref_path).convert("RGB")
-        ref.thumbnail((1024, 1024))
+    def _ref_items(self, ref_path: Path, pal: np.ndarray) -> list:
+        """Reference + palette upload items; URLs already uploaded (also in earlier sessions) are reused."""
         key = f"{ref_path}:{ref_path.stat().st_mtime}"
-        return (self._upload(ref, "ref.png", "ref:" + key),
-                self._upload(palette_card(pal), "palette.png", "pal:" + key + str(pal.tobytes())))
+        out = []
+        for ck, name in (("ref:" + key, "ref.png"),
+                         ("pal:" + key + ":" + hashlib.sha1(pal.tobytes()).hexdigest()[:12], "palette.png")):
+            with self._lock:
+                url = self._cache.get(ck)
+            if url:
+                out.append(url)
+            elif name == "ref.png":
+                ref = Image.open(ref_path).convert("RGB")
+                ref.thumbnail((1024, 1024))
+                out.append((ref, name, ck))
+            else:
+                out.append((palette_card(pal), name, ck))
+        return out
 
-    def color_anchor(self, key_rgba, regions: Regions, ref_path: Path, pal: np.ndarray):
+    def color_anchor(self, key_rgba, regions: Regions, ref_path: Path, pal: np.ndarray, label: str = "",
+                     status=None):
+        (status or (lambda _s: None))("завантаження")
         clean = _on_white(key_rgba)
         ann = annotate(clean, regions)
-        ref_url, pal_url = self._ref_urls(ref_path, pal)
-        urls = [self._upload(clean.resize(ann.size, Image.LANCZOS), "clean.png"),
-                self._upload(ann, "regions.png"), ref_url, pal_url]
-        return self._ask(PROMPT_ANCHOR % regions.n, urls)
+        urls = self._upload_all([(clean.resize(ann.size, Image.LANCZOS), "clean.jpg"), (ann, "regions.jpg"),
+                                 *self._ref_items(ref_path, pal)], label)
+        return self._ask(PROMPT_ANCHOR % regions.n, urls, label, status)
 
     def color_follow(self, key_rgba, regions: Regions, anchor_rgba, anchor_regions: Regions,
-                     anchor_mapping: dict, anchor_fill: Image.Image, ref_path: Path, pal: np.ndarray):
+                     anchor_mapping: dict, anchor_fill: Image.Image, ref_path: Path, pal: np.ndarray,
+                     label: str = "", status=None):
+        (status or (lambda _s: None))("завантаження")
         clean = _on_white(key_rgba)
         ann = annotate(clean, regions)
         a_clean = _on_white(anchor_rgba)
@@ -264,9 +372,8 @@ class VLMColorizer:
         a_col.alpha_composite(anchor_fill)
         a_col.alpha_composite(Image.fromarray(anchor_rgba, "RGBA"))
         a_col = a_col.convert("RGB").resize(a_ann.size, Image.LANCZOS)
-        ref_url, pal_url = self._ref_urls(ref_path, pal)
-        urls = [self._upload(a_ann, "anchor_regions.png"), self._upload(a_col, "anchor_color.png"),
-                self._upload(clean.resize(ann.size, Image.LANCZOS), "clean.png"),
-                self._upload(ann, "regions.png"), ref_url, pal_url]
+        urls = self._upload_all([(a_ann, "anchor_regions.jpg"), (a_col, "anchor_color.jpg"),
+                                 (clean.resize(ann.size, Image.LANCZOS), "clean.jpg"), (ann, "regions.jpg"),
+                                 *self._ref_items(ref_path, pal)], label)
         prompt = PROMPT_FOLLOW % (describe_mapping(anchor_mapping), regions.n)
-        return self._ask(prompt, urls)
+        return self._ask(prompt, urls, label, status)

@@ -28,6 +28,7 @@ class Config:
     concurrency: int = 4
     vlm_model: str = "google/gemini-3.8-flash"
     vlm_est_cost: float = 0.07  # rough $ per frame for the estimate; real cost comes from fal usage
+    vlm_reasoning: bool = False  # slower; an unparsable answer is retried with reasoning anyway
     save_as_new_version: bool = True
     last_refs_dir: str = ""
 

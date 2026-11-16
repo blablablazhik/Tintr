@@ -1,18 +1,36 @@
+"""Tintr desktop app: pywebview window (Edge WebView2) around the HTML/CSS/JS UI in tintr/web/static."""
+
+from __future__ import annotations
+
+import os
 import sys
 
-from PySide6.QtWidgets import QApplication
-
-from tintr import APP_NAME
-from tintr.ui.main_window import MainWindow
+from tintr import APP_NAME, __version__
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setStyle("Fusion")
-    w = MainWindow()
-    w.show()
-    return app.exec()
+    import webview
+
+    from tintr.web import server
+    from tintr.web.api import Api
+
+    api = Api()
+    _srv, port = server.start(api._allowed_paths)
+    api._port = port
+    window = webview.create_window(
+        f"{APP_NAME} {__version__}", f"http://127.0.0.1:{port}/index.html", js_api=api,
+        width=1500, height=950, min_size=(1100, 720), background_color="#021019",
+    )
+    api._window = window
+
+    def on_closing():
+        if api._busy:  # noqa: SLF001
+            api._pl.cancel.set()
+        return True
+
+    window.events.closing += on_closing
+    webview.start(debug=os.environ.get("TINTR_DEBUG") == "1", private_mode=False)
+    return 0
 
 
 if __name__ == "__main__":
