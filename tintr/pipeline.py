@@ -292,8 +292,9 @@ class Pipeline:
                 out.append((e, a))
         return out
 
-    def pending_follows(self, only_uid: str | None = None) -> list[tuple[M.LayerEntry, M.KeyFrame]]:
-        """Non-anchor keys of layers whose anchor is approved and that weren't coloured with that anchor."""
+    def pending_follows(self, only_uid: str | None = None, force: bool = False) -> list[tuple[M.LayerEntry, M.KeyFrame]]:
+        """Non-anchor keys of layers whose anchor is approved and that weren't coloured with that anchor
+        (force: all of them, e.g. to recolour with another model)."""
         out = []
         for e in self.entries():
             if only_uid and e.uid != only_uid:
@@ -302,7 +303,7 @@ class Pipeline:
             if not (a and a.vlm_mapping and e.anchor_approved):
                 continue
             for k in e.masters():
-                if k.idx != a.idx and k.key_file and (not k.vlm_mapping or k.vlm_anchor_ver != e.anchor_version):
+                if k.idx != a.idx and k.key_file and (force or not k.vlm_mapping or k.vlm_anchor_ver != e.anchor_version):
                     out.append((e, k))
         return out
 
@@ -343,10 +344,10 @@ class Pipeline:
                 e.anchor_approved = False
         self._colorize(todo)
 
-    def colorize_follows(self, only_uid: str | None = None) -> None:
+    def colorize_follows(self, only_uid: str | None = None, force: bool = False) -> None:
         """Colour the remaining keys of one layer, or (only_uid=None) of every layer with an approved anchor
-        in every clip — all requests run in parallel (cfg.concurrency)."""
-        todo = self._check_refs(self.pending_follows(only_uid), skip=only_uid is None)
+        in every clip — all requests run in parallel (cfg.concurrency). force: all keys again."""
+        todo = self._check_refs(self.pending_follows(only_uid, force), skip=only_uid is None)
         if not todo:
             waiting = [e.layer_name for e in self.awaiting_approval()]
             self.log(("Чекають затвердження якоря: " + ", ".join(waiting)) if waiting else "Нічого розфарбовувати.")
@@ -449,10 +450,13 @@ class Pipeline:
         a = self.anchor_key(e)
         if not a or not a.vlm_mapping:
             raise ValueError("The anchor frame has not been coloured yet.")
-        # version = hash of the approved colours: keys coloured with another anchor state get
-        # recoloured, but reverting to an earlier approved state doesn't trigger paid calls again
+        # version = hash of the approved colours AND of what the numbers refer to (key + region map):
+        # keys coloured with another anchor state get recoloured (also after the anchor was recoloured
+        # with a new segmentation), but reverting to an earlier approved state costs nothing again
         colors = {r: v.get("color") for r, v in a.vlm_mapping.items()}
-        e.anchor_version = int(hashlib.sha1(json.dumps(colors, sort_keys=True).encode()).hexdigest()[:12], 16)
+        regs = self._regions(e, a)
+        state = {"colors": colors, "key": a.hash, "regions": [regs.ver, regs.n]}
+        e.anchor_version = int(hashlib.sha1(json.dumps(state, sort_keys=True).encode()).hexdigest()[:12], 16)
         e.anchor_approved_mapping = {r: dict(v) for r, v in a.vlm_mapping.items()}
         e.anchor_approved = True
         self.manifest.save()

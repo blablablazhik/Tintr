@@ -464,12 +464,17 @@ function actionView(l) {
         <button class="btn primary" data-act="follows" ${dis}>Розфарбувати ${l.followsN} кадр(ів) · ~${money(l.followsN * S.estFollow)}</button>${recolorLink(dis)}`;
     case "ready":
       return `<b>Усі кадри готові</b><p>${l.total} кадр(ів) розфарбовано. Можна вставляти в TVPaint.</p>
-        <button class="btn primary" data-act="view" data-view="insert">До вставки</button>${recolorLink(dis)}`;
+        <button class="btn primary" data-act="view" data-view="insert">До вставки</button>${refollowLink(l, dis)}${recolorLink(dis)}`;
     case "done":
       return `<b>Вставлено в TVPaint</b><p>Шар ${esc(l.name)}_color створено під лайном.</p>
-        <button class="btn" data-act="view" data-view="insert">Вставити знову</button>${recolorLink(dis)}`;
+        <button class="btn" data-act="view" data-view="insert">Вставити знову</button>${refollowLink(l, dis)}${recolorLink(dis)}`;
   }
   return "";
+}
+
+function refollowLink(l, dis) {
+  // all keys again with the approved anchor (e.g. another model in Settings)
+  return l.keysN ? `<button class="link" data-act="refollow" ${dis}>Перефарбувати всі кадри · ${l.keysN}</button>` : "";
 }
 
 function recolorLink(dis) {
@@ -570,6 +575,9 @@ async function onClick(e) {
     case "approve": call("approve_anchor", l.uid); break;
     case "follows":
       if (await confirmCost(`Буде розфарбовано ${l.followsN} кадр(ів) шару ${l.name} за затвердженим якорем.`, l.followsN * S.estFollow)) call("colorize_follows", l.uid);
+      break;
+    case "refollow":
+      if (await confirmCost(`Буде заново розфарбовано всі ${l.keysN} кадр(ів) шару ${l.name} за затвердженим якорем. Поточні кольори кадрів буде замінено.`, l.keysN * S.estFollow)) call("colorize_follows", l.uid, true);
       break;
     case "all-anchors":
       if (await confirmCost(`Gemini паралельно розфарбує якорі ${S.allAnchors} шар(ів) у всіх кліпах. Шари без референсу буде пропущено.`, S.allAnchors * S.est)) call("colorize_all_anchors");

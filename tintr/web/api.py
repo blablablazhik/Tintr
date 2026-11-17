@@ -206,6 +206,7 @@ class Api:
             "ref": Path(e.ref_path).name if e.ref_path else "", "refUrl": self._url(e.ref_path, 900),
             "palette": pal, "swatch": self._swatch(pal),
             "followsN": n_follow, "keys": keys,
+            "keysN": sum(1 for k in e.masters() if k.key_file and not (a and k.idx == a.idx)),
         }
 
     @staticmethod
@@ -295,12 +296,13 @@ class Api:
             return {"ok": False, "error": "Задайте fal.ai API key у налаштуваннях."}
         return self._task("Розфарбовування всіх якорів", lambda: self._pl.colorize_anchors(None, False))
 
-    def colorize_follows(self, uid: str | None = None) -> dict:
-        """Keys after the approved anchor: of one layer (uid) or of every clip (None), in parallel."""
+    def colorize_follows(self, uid: str | None = None, force: bool = False) -> dict:
+        """Keys after the approved anchor: of one layer (uid) or of every clip (None), in parallel.
+        force: recolour all of them, also those already coloured with this anchor."""
         if not get_api_key():
             return {"ok": False, "error": "Задайте fal.ai API key у налаштуваннях."}
         name = "Розфарбовування кадрів за якорем" if uid else "Розфарбовування всіх кадрів"
-        return self._task(name, lambda: self._pl.colorize_follows(uid or None))
+        return self._task(name, lambda: self._pl.colorize_follows(uid or None, bool(force)))
 
     def inject(self, uids: list[str], save: str) -> dict:
         if save in ("new", "overwrite"):
