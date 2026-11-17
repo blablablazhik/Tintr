@@ -582,6 +582,8 @@ function bindMain() {
   for (const el of document.querySelectorAll("#app [data-zoom]")) bindZoomable(el.dataset.zoom);
   fitFrames();
   applyAllZooms();
+  const sel = document.querySelector(".kf.sel");
+  if (sel) sel.scrollIntoView({ block: "nearest", inline: "nearest" });
   if (ui.anchorFull) toggleAnchorFull(true);
   for (const inp of document.querySelectorAll('[data-act="isel"]')) inp.addEventListener("change", () => {
     if (inp.checked) ui.insertSel.add(inp.dataset.uid); else ui.insertSel.delete(inp.dataset.uid);
@@ -673,7 +675,22 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "-") zoomCmd("out");
   else if (e.key === "0") zoomCmd("fit");
   else if (e.code === "KeyA") toggleAnchorFull();  // any keyboard layout
+  else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); stepKey(e.key === "ArrowRight" ? 1 : -1); }
 });
+
+function stepKey(dir) {
+  // previous / next key in the order of the bottom strip (anchor, unique keys, repeats)
+  const l = curLayer();
+  if (!l || ui.view !== "main") return;
+  const order = [...l.keys.filter((k) => k.idx === l.anchorIdx), ...l.keys.filter((k) => k.dup == null && k.idx !== l.anchorIdx),
+    ...l.keys.filter((k) => k.dup != null)];
+  const i = order.findIndex((k) => k.idx === ui.idx);
+  const next = order[i + dir];
+  if (!next) return;
+  ui.idx = next.idx;
+  closePopover();
+  render();
+}
 
 // ---------- log drawer
 function toggleLog() {
