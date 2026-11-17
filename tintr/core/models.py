@@ -13,7 +13,7 @@ FOLLOW_TOKENS = (11_000, 1_000)
 # best first. (id, short note, measured $ per anchor). Dropped: gemini-3.8-flash (29/42, slow, cut-off
 # answers), gpt-6.1-sol / -terra (17/42), qwen4-max (blocked by fal data policy), grok-4.7 (no answer).
 ANCHOR_MODELS = [
-    ("anthropic/claude-opus-5.5", "№1 у тесті: 37/42, 35 с", 0.064),
+    ("anthropic/claude-opus-5.5", "№1 у тесті: 37/42, з фрагментами 40.7/42", 0.088),
     ("google/gemini-4-carbon", "№2: 37/42, але 175 с", 0.271),
     ("anthropic/claude-sonnet-5.5", "№3: 34/42, найшвидша", 0.024),
     ("google/gemini-4-argon", "№4: 34/42", 0.034),

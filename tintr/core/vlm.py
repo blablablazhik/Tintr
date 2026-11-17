@@ -433,6 +433,72 @@ def annotate(base: Image.Image, regions: Regions, width: int = VLM_W,
     return im
 
 
+# ---- zoomed details of dense spots (anchor). Tested on the Anim_2 anchor with Opus 5.5: details cut tight
+# fixed the mouth but lost context (ear read as hair, tie end as shirt); with >= 1/3 of the figure around them
+# and a matching frame on the main view: 40.7/42 vs 37.3 without details.
+FRAME_COLS = [(230, 30, 30), (20, 90, 230), (200, 0, 200)]
+FRAME_NAMES = ["red", "blue", "magenta"]
+DETAIL_W = 1024
+
+
+def detail_boxes(regions: Regions, box: tuple[int, int, int, int], max_n: int = 3) -> list[tuple[int, int, int, int]]:
+    """Areas (full-res px) to show zoomed: clusters of >= 2 regions too small for their number in the main view,
+    each grown to >= 35% of the figure with room around it, largest clusters first."""
+    fig = max(box[2] - box[0], box[3] - box[1])
+    s = min(VLM_W / fig, MAX_UPSCALE)
+    small = [i for i, (x, y, r) in regions.points.items() if r * s < 22]
+    if len(small) < 2:
+        return []
+    pts = np.array([regions.points[i][:2] for i in small], float)
+    link = 0.045 * fig
+    lab = -np.ones(len(small), int)
+    n_cl = 0
+    for i in range(len(small)):  # single-linkage clusters
+        if lab[i] >= 0:
+            continue
+        stack, lab[i] = [i], n_cl
+        while stack:
+            j = stack.pop()
+            near = np.flatnonzero((np.hypot(*(pts - pts[j]).T) < link) & (lab < 0))
+            lab[near] = n_cl
+            stack += near.tolist()
+        n_cl += 1
+    sl = ndi.find_objects(regions.reg)
+    H, W = regions.reg.shape
+    found = []
+    for k in range(n_cl):
+        mem = [small[i] for i in np.flatnonzero(lab == k)]
+        if len(mem) < 2:
+            continue
+        y0 = min(sl[i - 1][0].start for i in mem); y1 = max(sl[i - 1][0].stop for i in mem)
+        x0 = min(sl[i - 1][1].start for i in mem); x1 = max(sl[i - 1][1].stop for i in mem)
+        pad = 0.15 * max(x1 - x0, y1 - y0) + 12
+        found.append((len(mem), (int(max(0, x0 - pad)), int(max(0, y0 - pad)), int(x1 + pad), int(y1 + pad))))
+    out = []
+    for _, b in sorted(found, reverse=True)[:max_n]:  # biggest clusters first; keep what surrounds the spot
+        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+        half = max(0.35 * fig, 1.4 * max(b[2] - b[0], b[3] - b[1])) / 2
+        out.append((int(max(0, cx - half)), int(max(0, cy - half)), int(min(W, cx + half)), int(min(H, cy + half))))
+    return out
+
+
+def framed_annotate(base: Image.Image, regions: Regions, box, details: list) -> Image.Image:
+    """The main numbered view with a coloured frame around each detail area."""
+    im = annotate(base, regions, box=box, margin=LABEL_MARGIN)
+    _, s, ox, oy = view(base, box, margin=LABEL_MARGIN)
+    d = ImageDraw.Draw(im)
+    for b, c in zip(details, FRAME_COLS):
+        d.rectangle(((b[0] - ox) * s, (b[1] - oy) * s, (b[2] - ox) * s, (b[3] - oy) * s), outline=c, width=5)
+    return im
+
+
+def detail_image(base: Image.Image, regions: Regions, b, color) -> Image.Image:
+    """Zoomed detail: only regions whose number point lies inside it are numbered; border in the frame colour."""
+    from PIL import ImageOps
+    sub = Regions(regions.reg, regions.n, {i: p for i, p in regions.points.items() if b[0] <= p[0] < b[2] and b[1] <= p[1] < b[3]})
+    return ImageOps.expand(annotate(base, sub, width=DETAIL_W, box=b, margin=LABEL_MARGIN // 2), border=10, fill=color)
+
+
 PREVIEW_W = 3072  # numbered preview in the UI: sharp when zoomed in, same look as the VLM image when fitted
 PREVIEW_VER = "3"  # bump when the look of the marks changes: older previews are redrawn on connect
 
@@ -516,16 +582,22 @@ Answer with ONLY a JSON object, no markdown, exactly in this form:
 {"regions": {"1": {"part": "<short name>", "color": "C3"}, "2": {"part": "background", "color": "BG"}, ...}}
 Include every number from 1 to %d."""
 
-PROMPT_ANCHOR = """You are a professional animation ink-and-paint artist doing paint-bucket colouring.
-
-Image 1: the line-art frame to colour (clean).
-Image 2: the SAME frame with every paintable region marked (see MARKS below).
-Image 3: the character colour reference (colour model sheet).
-Image 4: the allowed colour palette; each swatch is labelled C1, C2, ...
-
-For EVERY numbered region in Image 2 decide which part of the character it is (skin, hair, hoodie,
-inner shirt, background, ...) and assign exactly one palette colour that this part has in Image 3.
-""" + _CRAFT + _RULES
+def anchor_prompt(n_regions: int, n_details: int = 0) -> str:
+    """Anchor prompt; with n_details zoomed details (Images 3..) framed in matching colours on Image 2."""
+    imgs = ["Image 1: the line-art frame to colour (clean).",
+            "Image 2: the SAME frame with every paintable region marked (see MARKS below)."
+            + (" Coloured rectangles show where the zoomed details below come from." if n_details else "")]
+    for z in range(n_details):
+        imgs.append(f"Image {3 + z}: ZOOMED detail of the area inside the {FRAME_NAMES[z]} rectangle of Image 2 (its border "
+                    "has the same colour), with the same numbers. Use it to read small regions exactly; use Image 2 to "
+                    "see what surrounds the area (which part of the body it belongs to).")
+    k = 3 + n_details
+    imgs.append(f"Image {k}: the character colour reference (colour model sheet).")
+    imgs.append(f"Image {k + 1}: the allowed colour palette; each swatch is labelled C1, C2, ...")
+    return ("You are a professional animation ink-and-paint artist doing paint-bucket colouring.\n\n" + "\n".join(imgs)
+            + "\n\nFor EVERY numbered region in Image 2 decide which part of the character it is (skin, hair, hoodie,\n"
+              "inner shirt, background, ...) and assign exactly one palette colour that this part has in the reference.\n"
+            + _CRAFT + _RULES % n_regions)
 
 PROMPT_FOLLOW = """You are a professional animation ink-and-paint artist doing paint-bucket colouring of an animation.
 An earlier key frame of the SAME character in the SAME shot was coloured and APPROVED by the art director.
@@ -730,10 +802,12 @@ class VLMColorizer:
         (status or (lambda _s: None))("завантаження")
         clean = _on_white(key_rgba)
         box = lines_box(key_rgba)  # the VLM sees the drawing cropped and enlarged, not the whole frame
-        ann = annotate(clean, regions, box=box, margin=LABEL_MARGIN)
-        urls = self._upload_all([(view(clean, box, margin=LABEL_MARGIN)[0], "clean.jpg"), (ann, "regions.jpg"),
-                                 *self._ref_items(ref_path, pal)], label)
-        return self._ask(PROMPT_ANCHOR % regions.n, urls, label, status)
+        details = detail_boxes(regions, box) if box else []  # dense spots, zoomed with their surroundings
+        ann = framed_annotate(clean, regions, box, details)
+        items = [(view(clean, box, margin=LABEL_MARGIN)[0], "clean.jpg"), (ann, "regions.jpg")]
+        items += [(detail_image(clean, regions, b, c), f"detail{n}.jpg") for n, (b, c) in enumerate(zip(details, FRAME_COLS), 1)]
+        urls = self._upload_all(items + self._ref_items(ref_path, pal), label)
+        return self._ask(anchor_prompt(regions.n, len(details)), urls, label, status)
 
     def color_follow(self, key_rgba, regions: Regions, anchor_rgba, anchor_regions: Regions,
                      anchor_mapping: dict, anchor_fill: Image.Image, ref_path: Path, pal: np.ndarray,
