@@ -627,6 +627,46 @@ what the part is, its position and shape. Only if a part does not exist in the a
 """ + _CRAFT + _RULES % n_regions)
 
 
+def parts_list(mapping: dict) -> str:
+    """The approved colours by part ("part = colour"), once per part, without the region numbers."""
+    def k(x):
+        return int(x) if str(x).isdigit() else 0
+    seen, out = set(), []
+    for _, v in sorted(mapping.items(), key=lambda t: k(t[0])):
+        line = f"{v.get('part', '?')} = {v.get('color', '?')}"
+        if line not in seen:
+            seen.add(line)
+            out.append(line)
+    return "\n".join(out)
+
+
+def follow_labeled_prompt(anchor_mapping: dict, n_regions: int, n_details: int = 0) -> str:
+    """Prompt for a key coloured after the approved anchor when the reference has its parts labelled: no
+    anchor images (their region numbers misled the model), the approved colours as text, the parts found
+    by the labels. Bench (Haiku 5.5, 2 layers): as good or better than follow_prompt and ~20% cheaper."""
+    det = "".join(f"Image {3 + z}: ZOOMED detail of the area inside the {FRAME_NAMES[z]} rectangle of Image 2 (its border "
+                  "has the same colour), with the same numbers. Use it to read small regions exactly; use Image 2 to "
+                  "see what surrounds the area (which part of the body it belongs to).\n" for z in range(n_details))
+    k = 3 + n_details
+    return ("""You are a professional animation ink-and-paint artist doing paint-bucket colouring of an animation.
+An earlier key frame of the SAME character in the SAME shot was coloured and APPROVED by the art director.
+Colour the new key frame so every part gets exactly the same colour as in the approved frame.
+
+Image 1: NEW frame to colour (clean line-art).
+Image 2: NEW frame with every paintable region marked (see MARKS below)."""
+            + (" Coloured rectangles show where the zoomed details below come from." if n_details else "") + "\n" + det
+            + f"""Image {k}: the character colour reference (colour model sheet); every part is labelled with its name.
+Image {k + 1}: the allowed colour palette; each swatch is labelled C1, C2, ...
+
+Colours of the parts in the approved frame (part = colour):
+""" + parts_list(anchor_mapping) + """
+
+For EVERY numbered region of the NEW frame (Image 2) decide which part of the character it is (compare with the
+reference and its labels) and use the colour of that part from the list above. If a part is not in the list,
+take its colour from the reference.
+""" + _CRAFT + _RULES % n_regions)
+
+
 def describe_mapping(mapping: dict) -> str:
     def k(x):
         return int(x) if str(x).isdigit() else 0
@@ -834,6 +874,26 @@ class VLMColorizer:
         items += [(detail_image(clean, regions, b, c), f"detail{n}.jpg") for n, (b, c) in enumerate(zip(details, FRAME_COLS), 1)]
         urls = self._upload_all(items + self._ref_items(ref_path, pal), label)
         return self._ask(anchor_prompt(regions.n, len(details)), urls, label, status)
+
+    def color_follow_labeled(self, key_rgba, regions: Regions, anchor_mapping: dict, labeled_path: Path,
+                             ref_path: Path, pal: np.ndarray, label: str = "", status=None):
+        """A key after the approved anchor, by the labelled reference (see follow_labeled_prompt)."""
+        (status or (lambda _s: None))("завантаження")
+        clean = _on_white(key_rgba)
+        box = lines_box(key_rgba)
+        details = detail_boxes(regions, box) if box else []
+        ann = framed_annotate(clean, regions, box, details)
+        items = [(view(clean, box, margin=LABEL_MARGIN)[0], "clean.jpg"), (ann, "regions.jpg")]
+        items += [(detail_image(clean, regions, b, c), f"detail{n}.jpg") for n, (b, c) in enumerate(zip(details, FRAME_COLS), 1)]
+        ck = f"lref:{labeled_path}:{labeled_path.stat().st_mtime}"
+        with self._lock:
+            lref = self._cache.get(ck)
+        if not lref:
+            im = Image.open(labeled_path).convert("RGB")
+            im.thumbnail((1400, 1400))
+            lref = (im, "ref_labeled.jpg", ck)
+        urls = self._upload_all(items + [lref, self._ref_items(ref_path, pal)[1]], label)
+        return self._ask(follow_labeled_prompt(anchor_mapping, regions.n, len(details)), urls, label, status)
 
     def color_follow(self, key_rgba, regions: Regions, anchor_rgba, anchor_regions: Regions,
                      anchor_mapping: dict, anchor_fill: Image.Image, ref_path: Path, pal: np.ndarray,

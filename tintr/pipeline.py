@@ -477,7 +477,9 @@ class Pipeline:
         if n_anchor:
             self.log(f"Якір: {c.vlm_model}" + (" · reasoning" if c.vlm_reasoning else "") + f" · {n_anchor} шт.")
         if len(jobs) - n_anchor:
-            self.log(f"Кадри за якорем: {follow_model} · {len(jobs) - n_anchor} шт.")
+            n_lab = sum(1 for e, k in jobs if k.idx != e.anchor_idx and self.labeled_ref(e))
+            self.log(f"Кадри за якорем: {follow_model} · {len(jobs) - n_anchor} шт."
+                     + (f" · за підписаним референсом: {n_lab}" if n_lab else ""))
 
         for e, k in jobs:
             self.key_status(e.uid, k.idx, "у черзі")
@@ -494,6 +496,11 @@ class Pipeline:
                 if k.idx == e.anchor_idx:
                     model = c.vlm_model
                     mapping, cost, _ = vlm_anchor.color_anchor(rgba, regs, Path(e.ref_path), pal, label, status)
+                elif lref := self.labeled_ref(e):  # the labelled reference: no anchor images (better, cheaper)
+                    model = follow_model
+                    mapping, cost, _ = vlm_follow.color_follow_labeled(rgba, regs, e.anchor_approved_mapping, lref,
+                                                                       Path(e.ref_path), pal, label, status)
+                    k.vlm_anchor_ver = e.anchor_version
                 else:
                     model = follow_model
                     a = e.key(e.anchor_idx)
