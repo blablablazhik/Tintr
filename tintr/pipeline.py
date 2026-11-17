@@ -195,6 +195,7 @@ class Pipeline:
             if k.hash and k.hash != h:
                 self.log(f"  key {k.idx} (frame {k.start}) changed since last run → will be recoloured")
                 k.status, k.regions_file, k.color_file, k.vlm_mapping = M.EXPORTED, "", "", {}
+                k.paint_file = k.erase_file = ""  # strokes were drawn over the old drawing
                 if e.anchor_idx == k.idx:
                     e.anchor_approved = False
             k.hash, k.key_file = h, f"keys/{base}.png"
@@ -269,9 +270,75 @@ class Pipeline:
         if not (k.regions_file and m.abs(e, k.regions_file).exists()):
             V.save_preview(V.preview(V._on_white(self._key_rgba(e, k)), regs), m.sub(e, "regions") / f"{base}_regions.png")
             k.regions_file = f"regions/{base}_regions.png"
-        V.fill(regs, k.vlm_mapping, pal).save(m.sub(e, "color") / f"{base}_color.png")
+        flat = V.fill(regs, k.vlm_mapping, pal)
+        paint, erase = self._edits(e, k)
+        if paint is not None or erase is not None:
+            flat.save(self.fill_path(e, k))  # the drawing tools draw over the fill without the edits
+            out = np.array(flat)
+            if erase is not None:
+                out[erase, 3] = 0
+            if paint is not None:
+                on = paint[..., 3] >= 128
+                out[on, :3], out[on, 3] = paint[on, :3], 255
+            flat = Image.fromarray(out, "RGBA")
+        flat.save(m.sub(e, "color") / f"{base}_color.png")
         k.color_file = f"color/{base}_color.png"
         k.status, k.error = M.COLORED, ""
+
+    # ---- hand edits (drawing tools)
+    def fill_path(self, e: M.LayerEntry, k: M.KeyFrame) -> Path:
+        return self.manifest.sub(e, "paint") / f"{Path(k.key_file).stem}_fill.png"
+
+    def _edits(self, e: M.LayerEntry, k: M.KeyFrame) -> tuple[np.ndarray | None, np.ndarray | None]:
+        """(paint RGBA array, erase bool mask) of a key, None where there is none / wrong size."""
+        m = self.manifest
+        H, W = self._regions(e, k).reg.shape
+        out = []
+        for rel in (k.paint_file, k.erase_file):
+            a = None
+            if rel and m.abs(e, rel).exists():
+                a = np.array(Image.open(m.abs(e, rel)).convert("RGBA"))
+                if a.shape[:2] != (H, W):
+                    a = None
+            out.append(a)
+        paint, erase = out
+        return paint, (erase[..., 3] >= 128 if erase is not None else None)
+
+    def save_edits(self, e: M.LayerEntry, k: M.KeyFrame, paint: Image.Image | None, erase: Image.Image | None) -> None:
+        """Store the strokes of the master key (a repeat edits its master) and redraw its colour."""
+        master = e.key(k.dup_of) if k.dup_of is not None else k
+        if not master.vlm_mapping:
+            raise ValueError("Спершу розфарбуйте цей кадр.")
+        base = Path(master.key_file).stem
+        for img, attr, suffix in ((paint, "paint_file", "_paint.png"), (erase, "erase_file", "_erase.png")):
+            path = self.manifest.sub(e, "paint") / f"{base}{suffix}"
+            if img is not None and np.array(img.convert("RGBA"))[..., 3].max() >= 128:
+                img.convert("RGBA").save(path)
+                setattr(master, attr, f"paint/{base}{suffix}")
+            else:  # nothing drawn (e.g. everything undone)
+                path.unlink(missing_ok=True)
+                setattr(master, attr, "")
+        self._write_outputs(e, master)
+        self.propagate_duplicates()
+        self.manifest.save()
+
+    def fill_region(self, e: M.LayerEntry, k: M.KeyFrame, region: int, color: str) -> None:
+        """Bucket: the region gets the colour and the strokes inside it are cleared, so it shows."""
+        master = e.key(k.dup_of) if k.dup_of is not None else k
+        paint, erase = self._edits(e, master)
+        if paint is not None or erase is not None:
+            reg = self._regions(e, master).reg
+            mask = ndi.binary_dilation(reg == region, iterations=3) & ((reg == region) | (reg == 0))
+            m, base = self.manifest, Path(master.key_file).stem
+            if paint is not None:
+                paint[mask] = 0
+                Image.fromarray(paint, "RGBA").save(m.abs(e, master.paint_file))
+            if erase is not None:
+                erase &= ~mask
+                ea = np.zeros((*erase.shape, 4), np.uint8)
+                ea[erase] = 255
+                Image.fromarray(ea, "RGBA").save(m.abs(e, master.erase_file))
+        self.set_region_color(e, master, region, color)
 
     # --------------------------------------------------------------- colour (VLM)
     def anchor_key(self, e: M.LayerEntry) -> M.KeyFrame | None:

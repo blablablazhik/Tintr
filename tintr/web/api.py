@@ -203,6 +203,10 @@ class Api:
                 "key": f(k.key_file), "keyThumb": f(k.key_file, 280),
                 "regions": f(k.regions_file),
                 "color": f(k.color_file) if colored else "", "colorThumb": f(k.color_file, 280) if colored else "",
+                # drawing tools: the flat fill without hand edits + the edit layers themselves
+                "fill": (self._url(self._pl.fill_path(e, k)) if colored and (k.paint_file or k.erase_file) else
+                         f(k.color_file) if colored else ""),
+                "paint": f(k.paint_file), "erase": f(k.erase_file),
                 "live": self._live.get(f"{e.uid}:{k.idx}"),
             })
         n_follow = sum(1 for le, _ in self._pl.pending_follows() if le.uid == e.uid) if stage == "frames" else 0
@@ -370,6 +374,29 @@ class Api:
         e = self._entry(uid)
         self._pl.set_region_color(e, e.key(int(idx)), int(region), str(color))
         self._on_log(f"  {_short(e.layer_name)} #{idx}: область {region} → {color}")
+        return {"ok": True, "state": self._state()}
+
+    def save_paint(self, uid: str, idx: int, paint_b64: str, erase_b64: str) -> dict:
+        """Drawing tools: the whole paint and erase layers of a key as PNG (base64, "" = empty)."""
+        if g := self._guard():
+            return g
+        import io
+
+        from PIL import Image
+
+        def img(b64):
+            return Image.open(io.BytesIO(base64.b64decode(b64))) if b64 else None
+        e = self._entry(uid)
+        self._pl.save_edits(e, e.key(int(idx)), img(paint_b64), img(erase_b64))
+        return {"ok": True, "state": self._state()}
+
+    def fill_region(self, uid: str, idx: int, region: int, color: str) -> dict:
+        """Bucket: region colour + strokes inside the region cleared."""
+        if g := self._guard():
+            return g
+        e = self._entry(uid)
+        self._pl.fill_region(e, e.key(int(idx)), int(region), str(color))
+        self._on_log(f"  {_short(e.layer_name)} #{idx}: заливка області {region} → {color}")
         return {"ok": True, "state": self._state()}
 
     def add_palette_color(self, uid: str, hex_color: str) -> dict:

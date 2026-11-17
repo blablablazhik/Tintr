@@ -42,6 +42,9 @@ class KeyFrame:
     # {"<region>": {"part": str, "color": "C<n>" | "BG"}}
     vlm_mapping: dict = field(default_factory=dict)
     vlm_anchor_ver: int = 0  # anchor version this key was coloured with
+    # hand edits over the flat fill (drawing tools): survive refills and region recolouring
+    paint_file: str = ""  # RGBA, hard-edged strokes (alpha 255 = paint)
+    erase_file: str = ""  # RGBA, alpha 255 = erased to transparent
 
 
 @dataclass
