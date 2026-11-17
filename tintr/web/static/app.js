@@ -10,6 +10,7 @@ const ui = {
   zooms: {},                         // zoom (1 = fit) + pan per view: main, ref; kept across keys/modes
   panned: false,                     // last mouse press was a pan drag, not a click
   showAnchor: false,                 // the stage shows the anchor instead of the key (KeyA), same zoom
+  hideLines: false,                  // coloured frames without the line art on top (KeyL), kept across keys
 };
 
 const REMOTE = !!window.TINTR_REMOTE;
@@ -284,9 +285,9 @@ function stageView(l, k) {
   const a = ui.showAnchor ? anchorOf(l) : null;
   if (a) {  // quick check against the anchor: same view, same zoom; regions are not editable here
     const mode = modesFor(a).includes(ui.mode) ? ui.mode : "color";
-    return frameHtml(a, mode, true, "", false) + zoomBar() + `<span class="anchor-tag">Якір · ключ #${a.idx}</span>`;
+    return frameHtml(a, mode, true, "", false) + zoomBar(mode) + `<span class="anchor-tag">Якір · ключ #${a.idx}</span>`;
   }
-  const big = frameHtml(k, ui.mode, true) + zoomBar();
+  const big = frameHtml(k, ui.mode, true) + zoomBar(ui.mode);
   const hint = ui.mode === "regions" ? "Це бачить Gemini. Клік по області — змінити колір."
     : ui.mode === "color" ? "Клік по області — змінити колір." : "";
   return big + (hint && master(l, k).colored ? `<span class="stage-hint">${hint}</span>` : ui.mode === "regions" ? `<span class="stage-hint">Області, які бачить Gemini.</span>` : "");
@@ -295,7 +296,7 @@ function stageView(l, k) {
 function frameHtml(k, mode, main, extra = "", editable = true) {
   const W = S.project.w, H = S.project.h;
   let imgs = "", paper = "";
-  if (mode === "color") { imgs = `<img src="${k.color}" alt=""><img src="${k.key}" alt="">`; paper = "paper"; }
+  if (mode === "color") { imgs = `<img src="${k.color}" alt=""><img class="lines" src="${k.key}" alt="">`; paper = "paper" + (ui.hideLines ? " no-lines" : ""); }
   else if (mode === "regions") imgs = `<img src="${k.regions}" alt="">`;
   else imgs = `<img src="${k.key}" alt="">`;
   const click = main && editable && mode !== "line" ? "clickable" : "";
@@ -319,8 +320,10 @@ function fitFrames() {
 }
 
 // ---------- zoom / pan of the main preview (line, regions, colour)
-function zoomBar() {
-  return `<div class="zoombar" role="group" aria-label="Масштаб">
+function zoomBar(mode) {
+  const lines = mode === "color" ? `<button class="btn sm ${ui.hideLines ? "" : "on"}" data-act="lines" id="lines-btn" aria-pressed="${!ui.hideLines}"
+    title="Показати / сховати лайн на розфарбованих кадрах (L)">Лайн</button>` : "";
+  return `<div class="zoombar" role="group" aria-label="Масштаб">${lines}
     <button class="icon-btn" data-act="zoom" data-z="out" title="Зменшити (−)" aria-label="Зменшити">−</button>
     <span id="zoom-pct">${Math.round(zstate("main").s * 100)}%</span>
     <button class="icon-btn" data-act="zoom" data-z="in" title="Збільшити (+)" aria-label="Збільшити">+</button>
@@ -432,7 +435,15 @@ function bindZoomable(name) {
 // ---------- the anchor: under the reference (zoom linked to the main view) and in the stage on KeyA
 function anchorOf(l) { const a = l && l.keys.find((x) => x.idx === l.anchorIdx); return a && a.colored ? a : null; }
 
-function anchorLayers(a) { return `<img src="${a.color}" alt=""><img src="${a.key}" alt="">`; }
+function anchorLayers(a) { return `<img src="${a.color}" alt=""><img class="lines" src="${a.key}" alt="">`; }
+
+function toggleLines() {
+  // a class switch instead of a re-render: the zoom and pan stay exactly where they are
+  ui.hideLines = !ui.hideLines;
+  for (const el of document.querySelectorAll(".frame.paper, .anchor-view")) el.classList.toggle("no-lines", ui.hideLines);
+  const b = $("#lines-btn");
+  if (b) { b.classList.toggle("on", !ui.hideLines); b.setAttribute("aria-pressed", String(!ui.hideLines)); }
+}
 
 function toggleAnchor(on = !ui.showAnchor) {
   if (on && !anchorOf(curLayer())) on = false;
@@ -499,7 +510,7 @@ function sideView() {
   return `<aside class="side"><div class="side-head"><span class="eyebrow">Референс · ${esc(l.name)}</span>
     ${l.refUrl ? `<button class="link" data-act="ref" ${S.busy ? "disabled" : ""}>Змінити</button>` : ""}</div>
     ${ref}${a ? `<div class="side-head"><span class="eyebrow">Якір · ключ #${a.idx}</span></div>
-      <div class="anchor-view zoomable paper" data-zoom="anchor" style="aspect-ratio:${S.project.w}/${S.project.h}"><div class="zoom">${anchorLayers(a)}</div></div>` : ""}
+      <div class="anchor-view zoomable paper ${ui.hideLines ? "no-lines" : ""}" data-zoom="anchor" style="aspect-ratio:${S.project.w}/${S.project.h}"><div class="zoom">${anchorLayers(a)}</div></div>` : ""}
     <div class="grow"></div><div class="action" id="action">${actionView(l)}</div></aside>`;
 }
 
@@ -628,6 +639,7 @@ async function onClick(e) {
     case "view": ui.view = b.dataset.view; closePopover(); render(); break;
     case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; ui.showAnchor = false; closePopover(); render(); break;
     case "zoom": zoomCmd(b.dataset.z); break;
+    case "lines": toggleLines(); break;
     case "key": ui.idx = +b.dataset.idx; ui.showAnchor = false; closePopover(); render(); break;
     case "mode": ui.mode = b.dataset.mode; closePopover(); render(); break;
     case "rescan": call("connect", null, true); break;
@@ -697,6 +709,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "-") zoomCmd("out");
   else if (e.key === "0" || e.code === "KeyF") zoomCmd("fit");  // F: any keyboard layout
   else if (e.code === "KeyA") toggleAnchor();  // any keyboard layout
+  else if (e.code === "KeyL") toggleLines();
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); stepKey(e.key === "ArrowRight" ? 1 : -1); }
 });
 
