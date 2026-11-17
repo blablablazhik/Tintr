@@ -255,9 +255,10 @@ function doConnect() {
 // ---------- tree
 function treeView() {
   const clips = (S.clips || []).map((c) => `<div class="clip"><div class="clip-title"><b>${esc(c.name)}</b><span>кліп ${c.pos}</span></div>
-    ${c.layers.map((l) => `<button class="layer ${l.uid === ui.uid ? "sel" : ""}" data-act="layer" data-uid="${esc(l.uid)}">
+    ${c.layers.map((l) => `<button class="layer ${l.uid === ui.uid ? "sel" : ""}" data-act="layer" data-uid="${esc(l.uid)}" title="${esc(layerState(l))}">
       <span class="swatch" style="${l.swatch ? `background:${l.swatch}` : ""}"></span>
-      <span class="layer-text"><b>${esc(l.name)}</b><small class="tone-${l.tone}">${esc(layerState(l))}</small></span>
+      <span class="layer-text"><b>${esc(l.name)}</b></span>
+      <span class="tdot tone-${l.tone} ${layerBusy(l) ? "live" : ""}" aria-label="${esc(layerState(l))}"></span>
       <span class="count">${l.done}/${l.total}</span></button>`).join("")}</div>`).join("");
   const scanned = S.project.scanned;
   const empty = scanned ? "Шарів з тегом _cc- не знайдено." : "Проект ще не скановано.";
@@ -278,9 +279,10 @@ function allClipsMenu() {
   return menu("m-all", `Розфарбувати все${n ? ` · ${n}` : ""} ▾`, "Розфарбувати всі кліпи паралельно", items, `btn sm${n && !busy ? " all-on" : ""}`);
 }
 
+const layerBusy = (l) => l.keys.some((k) => ui.live[`${l.uid}:${k.idx}`]);
+
 function layerState(l) {
-  const busyHere = l.keys.some((k) => ui.live[`${l.uid}:${k.idx}`]);
-  if (busyHere) return "розфарбовується";
+  if (layerBusy(l)) return "розфарбовується";
   if (l.stage === "export" && l.keys.some((k) => k.key)) return "ключі застаріли";
   if (l.stage === "anchor" || l.stage === "export") return l.keys.some((k) => k.key) ? `${l.total} ключів · ${l.unique} унікальних` : l.stateText;
   if (l.stage === "frames") return `${l.followsN} кадр(ів) до розфарбування`;
@@ -307,11 +309,8 @@ function centerView() {
   const modeBtns = [["line", "Лайн"], ["regions", "Області"], ["color", "Колір"]].map(([id, n]) =>
     `<button class="mode ${ui.mode === id ? "on" : ""}" data-act="mode" data-mode="${id}" ${modes.includes(id) ? "" : "disabled"}>${n}</button>`).join("");
   const canAnchor = m && l.anchorIdx != null && m.idx !== l.anchorIdx && !S.busy;
-  const info = k ? `ключ #${k.idx} · кадр ${k.start} · ${k.length} кадр(ів)${k.dup != null ? ` · повтор #${k.dup}` : ""}` : "";
-  let state = "";
-  if (k && k.anchor) state = l.anchorApproved ? '<span class="tone-ok" style="font-size:12px">якір затверджено</span>' : k.colored ? '<span class="tone-accent" style="font-size:12px">якір чекає затвердження</span>' : "";
-  else if (k && k.colored && m && m.followed) state = '<span class="tone-ok" style="font-size:12px">розфарбовано за якорем</span>';
-  if (k && k.error) state = `<span class="tone-warn" style="font-size:12px" title="${esc(k.error)}">помилка</span>`;
+  const info = k ? `#${k.idx} · кадр ${k.start} · ${k.length} кадр(ів)${k.dup != null ? ` · повтор #${k.dup}` : ""}` : "";
+  const state = keyChip(l, k, m);
   const more = menu("m-layer", ICON.more, "Дії з шаром", [
     { act: "set-anchor", label: `Зробити ключ #${m ? m.idx : "–"} якорем`, hint: canAnchor ? "якір задає кольори решти кадрів" : "цей ключ уже якір", dis: !canAnchor },
     { act: "export", label: "Оновити ключі з TVPaint", hint: "якщо кадри змінили в TVPaint", dis: !!S.busy },
@@ -323,6 +322,21 @@ function centerView() {
     <div class="stage" id="stage">${stageView(l, k)}</div>
     ${groupsView(l)}
   </main>`;
+}
+
+function keyChip(l, k, m) {
+  // the one place that says what state this key is in
+  if (!k || !k.key) return "";
+  const chip = (tone, text, title = "") => `<span class="chip tone-${tone}" ${title ? `title="${esc(title)}"` : ""}>${text}</span>`;
+  if (k.error) return chip("warn", "помилка", k.error);
+  if (ui.live[`${l.uid}:${k.idx}`] || (m && ui.live[`${l.uid}:${m.idx}`])) return chip("accent", "розфарбовується");
+  if (m && m.idx === l.anchorIdx) {
+    if (!m.colored) return chip("muted", "якір · ще не розфарбовано");
+    return l.anchorApproved ? chip("ok", "якір · затверджено") : chip("accent", "якір · перевірте");
+  }
+  if (!m || !m.colored) return chip("muted", "не розфарбовано");
+  if (!m.followed) return chip("accent", "за старим якорем", "Розфарбуйте кадри знову за затвердженим якорем");
+  return chip("ok", "розфарбовано за якорем");
 }
 
 function stageView(l, k) {
@@ -558,10 +572,12 @@ function renderLive() {
     el.hidden = !live;
     if (live) el.firstElementChild.textContent = liveText(live);
   }
-  // the tree row text ("розфарбовується") depends on live statuses too
+  // the tree row state ("розфарбовується") depends on live statuses too
   for (const l of layers()) {
-    const row = document.querySelector(`.layer[data-uid="${CSS.escape(l.uid)}"] small`);
-    if (row) row.textContent = layerState(l);
+    const row = document.querySelector(`.layer[data-uid="${CSS.escape(l.uid)}"]`);
+    if (!row) continue;
+    row.title = layerState(l);
+    row.querySelector(".tdot").classList.toggle("live", layerBusy(l));
   }
 }
 setInterval(() => { if (Object.keys(ui.live).length) renderLive(); }, 1000);
