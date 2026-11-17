@@ -7,9 +7,9 @@ const ui = {
   uid: null, idx: null, mode: null, view: "main",
   log: [], logOpen: false, live: {},
   insertSel: null, save: null, port: null, connectError: "",
-  zooms: {},                         // zoom (1 = fit) + pan per view: main, ref, anchor, full; kept across keys/modes
+  zooms: {},                         // zoom (1 = fit) + pan per view: main, ref; kept across keys/modes
   panned: false,                     // last mouse press was a pan drag, not a click
-  anchorFull: false,                 // anchor opened over the whole window
+  showAnchor: false,                 // the stage shows the anchor instead of the key (KeyA), same zoom
 };
 
 const REMOTE = !!window.TINTR_REMOTE;
@@ -281,19 +281,24 @@ function stageView(l, k) {
     return `<div class="empty"><b>Ключі ще не виведені</b>Tintr збере ключові кадри цього кліпу з TVPaint одним викликом і одразу знайде на них області для розфарбування. Це безкоштовно.
       <button class="btn primary" data-act="export" ${S.busy ? "disabled" : ""}>Вивести ключі</button></div>`;
   }
+  const a = ui.showAnchor ? anchorOf(l) : null;
+  if (a) {  // quick check against the anchor: same view, same zoom; regions are not editable here
+    const mode = modesFor(a).includes(ui.mode) ? ui.mode : "color";
+    return frameHtml(a, mode, true, "", false) + zoomBar() + `<span class="anchor-tag">Якір · ключ #${a.idx}</span>`;
+  }
   const big = frameHtml(k, ui.mode, true) + zoomBar();
   const hint = ui.mode === "regions" ? "Це бачить Gemini. Клік по області — змінити колір."
     : ui.mode === "color" ? "Клік по області — змінити колір." : "";
   return big + (hint && master(l, k).colored ? `<span class="stage-hint">${hint}</span>` : ui.mode === "regions" ? `<span class="stage-hint">Області, які бачить Gemini.</span>` : "");
 }
 
-function frameHtml(k, mode, main, extra = "") {
+function frameHtml(k, mode, main, extra = "", editable = true) {
   const W = S.project.w, H = S.project.h;
   let imgs = "", paper = "";
   if (mode === "color") { imgs = `<img src="${k.color}" alt=""><img src="${k.key}" alt="">`; paper = "paper"; }
   else if (mode === "regions") imgs = `<img src="${k.regions}" alt="">`;
   else imgs = `<img src="${k.key}" alt="">`;
-  const click = main && mode !== "line" ? "clickable" : "";
+  const click = main && editable && mode !== "line" ? "clickable" : "";
   return `<div class="frame ${paper} ${click} ${extra}" ${main ? 'id="frame" data-zoom="main"' : ""} data-w="${W}" data-h="${H}" style="aspect-ratio:${W}/${H}"><div class="zoom" ${main ? 'id="zoom"' : ""}>${imgs}</div></div>`;
 }
 
@@ -357,7 +362,7 @@ function zoomTo(name, s, cx, cy) {
 }
 
 function zoomCmd(cmd) {
-  const name = ui.anchorFull ? "full" : "main";
+  const name = "main";
   const el = zoomEl(name);
   if (!el) return;
   closePopover();
@@ -399,24 +404,17 @@ function bindZoomable(name) {
   el.addEventListener("dblclick", () => { if (name !== "main") { ui.zooms[name] = { s: 1, x: 0, y: 0 }; applyZoom(name); } });
 }
 
-// ---------- anchor over the whole window (KeyA toggles, Esc closes)
+// ---------- the anchor: under the reference and in the stage on KeyA
 function anchorOf(l) { const a = l && l.keys.find((x) => x.idx === l.anchorIdx); return a && a.colored ? a : null; }
 
 function anchorLayers(a) { return `<img src="${a.color}" alt=""><img src="${a.key}" alt="">`; }
 
-function toggleAnchorFull(on = !ui.anchorFull) {
-  const box = $("#anchor-full");
-  const a = anchorOf(curLayer());
-  if (on && !a) on = false;
-  ui.anchorFull = on;
-  box.hidden = !on;
-  if (!on) { box.innerHTML = ""; return; }
+function toggleAnchor(on = !ui.showAnchor) {
+  if (on && !anchorOf(curLayer())) on = false;
+  if (on === ui.showAnchor) return;
+  ui.showAnchor = on;
   closePopover();
-  const W = S.project.w, H = S.project.h;
-  const s = Math.min((window.innerWidth - 48) / W, (window.innerHeight - 48) / H);
-  box.innerHTML = `<div class="full-view zoomable paper" data-zoom="full" style="width:${Math.floor(W * s)}px;height:${Math.floor(H * s)}px"><div class="zoom">${anchorLayers(a)}</div></div>`;
-  bindZoomable("full");
-  applyZoom("full");
+  render();
 }
 
 function groupsView(l) {
@@ -584,7 +582,6 @@ function bindMain() {
   applyAllZooms();
   const sel = document.querySelector(".kf.sel");
   if (sel) sel.scrollIntoView({ block: "nearest", inline: "nearest" });
-  if (ui.anchorFull) toggleAnchorFull(true);
   for (const inp of document.querySelectorAll('[data-act="isel"]')) inp.addEventListener("change", () => {
     if (inp.checked) ui.insertSel.add(inp.dataset.uid); else ui.insertSel.delete(inp.dataset.uid);
     render();
@@ -604,9 +601,9 @@ async function onClick(e) {
     case "folder": call("open_folder"); break;
     case "log": toggleLog(); break;
     case "view": ui.view = b.dataset.view; closePopover(); render(); break;
-    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; closePopover(); render(); break;
+    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; ui.showAnchor = false; closePopover(); render(); break;
     case "zoom": zoomCmd(b.dataset.z); break;
-    case "key": ui.idx = +b.dataset.idx; closePopover(); render(); break;
+    case "key": ui.idx = +b.dataset.idx; ui.showAnchor = false; closePopover(); render(); break;
     case "mode": ui.mode = b.dataset.mode; closePopover(); render(); break;
     case "rescan": call("connect", null, true); break;
     case "export": call("export"); break;
@@ -668,13 +665,13 @@ document.addEventListener("mousedown", (e) => {
   if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame")) closePopover();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closePopover(); closeModal(); if (ui.anchorFull) toggleAnchorFull(false); return; }
+  if (e.key === "Escape") { closePopover(); closeModal(); toggleAnchor(false); return; }
   if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
   if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "+" || e.key === "=") zoomCmd("in");
   else if (e.key === "-") zoomCmd("out");
   else if (e.key === "0") zoomCmd("fit");
-  else if (e.code === "KeyA") toggleAnchorFull();  // any keyboard layout
+  else if (e.code === "KeyA") toggleAnchor();  // any keyboard layout
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); stepKey(e.key === "ArrowRight" ? 1 : -1); }
 });
 
@@ -688,6 +685,7 @@ function stepKey(dir) {
   const next = order[i + dir];
   if (!next) return;
   ui.idx = next.idx;
+  ui.showAnchor = false;
   closePopover();
   render();
 }
