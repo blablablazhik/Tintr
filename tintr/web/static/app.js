@@ -590,37 +590,38 @@ function renderLive() {
 setInterval(() => { if (Object.keys(ui.live).length) renderLive(); }, 1000);
 
 // ---------- pipette: a colour from the reference into the layer palette
-const refPixels = { url: "", ctx: null, w: 0, h: 0, loading: null };
+// the side panel may show the labelled reference and the stage (R) the plain one: each image is sampled itself
+const refPixels = {};  // image url → { ctx, w, h }
 
 function refSampler(url) {
-  // the reference drawn once into an offscreen canvas (same origin, so its pixels are readable)
-  if (refPixels.url === url) return refPixels.loading;
-  refPixels.url = url; refPixels.ctx = null;
-  refPixels.loading = new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement("canvas");
-      c.width = img.naturalWidth; c.height = img.naturalHeight;
-      const ctx = c.getContext("2d", { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0);
-      if (refPixels.url === url) Object.assign(refPixels, { ctx, w: c.width, h: c.height });
-      resolve();
-    };
-    img.onerror = () => resolve();
-    img.src = url;
-  });
-  return refPixels.loading;
+  // the image drawn once into an offscreen canvas (same origin, so its pixels are readable)
+  if (!url || refPixels[url]) return;
+  refPixels[url] = { ctx: null, w: 0, h: 0 };
+  const img = new Image();
+  img.onload = () => {
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0);
+    refPixels[url] = { ctx, w: c.width, h: c.height };
+  };
+  img.onerror = () => { delete refPixels[url]; };
+  img.src = url;
+}
+
+function samplePickers() {
+  for (const img of document.querySelectorAll(".ref-pick img")) refSampler(img.getAttribute("src"));
 }
 
 function refColorAt(view, cx, cy) {
-  // client point → pixel of the reference image (object-fit: contain inside the zoomed box) → "#RRGGBB"
-  const img = view.querySelector("img");
-  if (!img || !refPixels.ctx) return null;
-  const r = img.getBoundingClientRect(), s = Math.min(r.width / refPixels.w, r.height / refPixels.h);
-  const x = Math.floor((cx - r.left - (r.width - refPixels.w * s) / 2) / s);
-  const y = Math.floor((cy - r.top - (r.height - refPixels.h * s) / 2) / s);
-  if (x < 0 || y < 0 || x >= refPixels.w || y >= refPixels.h) return null;
-  const d = refPixels.ctx.getImageData(x, y, 1, 1).data;
+  // client point → pixel of the shown image (object-fit: contain inside the zoomed box) → "#RRGGBB"
+  const img = view.querySelector("img"), px = img && refPixels[img.getAttribute("src")];
+  if (!px || !px.ctx) return null;
+  const r = img.getBoundingClientRect(), s = Math.min(r.width / px.w, r.height / px.h);
+  const x = Math.floor((cx - r.left - (r.width - px.w * s) / 2) / s);
+  const y = Math.floor((cy - r.top - (r.height - px.h * s) / 2) / s);
+  if (x < 0 || y < 0 || x >= px.w || y >= px.h) return null;
+  const d = px.ctx.getImageData(x, y, 1, 1).data;
   if (d[3] < 128) return null;  // transparent background of the reference
   return "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase();
 }
@@ -633,7 +634,7 @@ function togglePipette(on = !ui.pipette) {
   $('[data-act="pipette"]')?.classList.toggle("on", on);
   const prev = $("#pip-preview");
   if (prev && !on) prev.hidden = true;
-  if (on) refSampler(l.refUrl);
+  if (on) samplePickers();
 }
 
 function palNote(text) {
@@ -647,7 +648,7 @@ function palNote(text) {
 function bindPipette() {
   const l = curLayer();
   if (!l) return;
-  if (ui.pipette) refSampler(l.refUrl);
+  if (ui.pipette) samplePickers();
   for (const ref of document.querySelectorAll(".ref-pick")) bindRefPick(ref, l);
   const pal = $("#palette");
   if (pal) pal.addEventListener("contextmenu", async (e) => {
@@ -685,8 +686,10 @@ function sideView() {
   const l = curLayer();
   if (!l) return `<aside class="side"></aside>`;
   const ref = l.refUrl
-    ? `<div class="ref ref-pick zoomable ${ui.pipette ? "picking" : ""}" data-zoom="ref" id="ref"><div class="zoom"><img src="${l.refUrl}" alt="Референс ${esc(l.name)}"></div></div>
-       <span class="ref-name">${esc(l.ref)} · <kbd>R</kbd> на весь кадр</span>
+    ? `<div class="ref ref-pick zoomable ${ui.pipette ? "picking" : ""}" data-zoom="ref" id="ref"><div class="zoom"><img src="${l.refLabeledUrl || l.refUrl}"
+         alt="Референс ${esc(l.name)}${l.refLabeledUrl ? " з підписами частин" : ""}"></div></div>
+       <span class="ref-name">${esc(l.ref)} · <kbd>R</kbd> ${l.refLabeledUrl ? "без підписів " : ""}на весь кадр</span>
+       ${refLabelsView(l)}
        <div class="pal-head"><span class="eyebrow">Палітра · ${l.palette.length}</span><span class="pal-note" id="pal-note">${esc(ui.palNote)}</span></div>
        <div class="palette" id="palette">${l.palette.map((p) => `<span class="${p.extra ? "extra" : ""}" data-name="${p.name}" style="background:${p.hex}"
          title="${p.name} ${p.hex}${p.extra ? " · додано піпеткою · права кнопка — видалити" : ""}"></span>`).join("")}<button class="pal-add ${ui.pipette ? "on" : ""}" data-act="pipette" ${S.busy ? "disabled" : ""}
@@ -696,6 +699,17 @@ function sideView() {
     <div class="side-head"><span class="eyebrow">Референс · ${esc(l.name)}</span>
     ${l.refUrl ? `<button class="link" data-act="ref" ${S.busy ? "disabled" : ""}>Змінити</button>` : ""}</div>
     ${ref}</aside>`;
+}
+
+function refLabelsView(l) {
+  // the parts of the reference labelled by the anchor model: the follow keys are coloured by these labels
+  const dis = S.busy ? "disabled" : "";
+  if (S.busy === "Підписування референсу") return `<div class="ref-labels"><span class="spin" aria-hidden="true"></span><span>Модель підписує частини…</span></div>`;
+  if (l.refLabeledUrl) return `<div class="ref-labels"><span>Підписано: ${l.refLabelsN}</span><span class="grow"></span>
+    <button class="link" data-act="label-ref" ${dis} title="Підписати частини заново (LLM)">Заново</button>
+    <button class="link" data-act="unlabel-ref" ${dis} title="Прибрати підписи: кадри за якорем знову підуть із зображеннями якоря">Прибрати</button></div>`;
+  return `<div class="ref-labels"><button class="btn sm" data-act="label-ref" ${dis}
+    title="Модель якоря назве частини персонажа на референсі. Кадри за якорем розфарбовуються за цими підписами — точніше й дешевше">Підписати частини (LLM)</button></div>`;
 }
 
 function actionView(l) {
@@ -858,6 +872,11 @@ async function onClick(e) {
     case "rescan": call("connect", null, true); break;
     case "export": call("export"); break;
     case "ref": REMOTE ? uploadRef(l.uid) : call("pick_ref", l.uid); break;
+    case "label-ref":
+      if (await confirmCost(`Модель якоря підпише частини на референсі шару ${l.name} (один запит).`
+        + (l.refLabeledUrl ? " Поточні підписи буде замінено." : ""), S.estLabel)) call("label_ref", l.uid);
+      break;
+    case "unlabel-ref": call("clear_ref_labels", l.uid); break;
     case "set-anchor": { const m = master(l, curKey()); call("set_anchor", l.uid, m.idx); break; }
     case "color-anchor":
       if (await confirmCost(`Gemini розфарбує якір шару ${l.name}.`, S.est)) call("colorize_anchor", l.uid, false);

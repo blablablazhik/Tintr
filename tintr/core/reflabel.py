@@ -20,7 +20,8 @@ from .palette import srgb_to_lab
 
 FLAT_DE = 14       # a reference pixel "has" a palette colour within this ΔE
 MAX_PATCHES = 60   # numbered patches shown to the model, the biggest
-OUT_H = 1100       # height of the drawn character in the labelled image (px)
+OUT_H = 1000       # height of the drawn character in the labelled image (px)
+FONT = 40          # label size: still readable when the image is fitted into the side panel
 SKIP = "skip"
 
 PROMPT = """You are an animation colour designer preparing a colour model sheet for ink-and-paint artists.
@@ -156,9 +157,9 @@ def render(rgb: np.ndarray, mask: np.ndarray, labels: list[dict]) -> Image.Image
     s = OUT_H / max(1, y1 - y0)
     crop = Image.fromarray(rgb[y0:y1, x0:x1])
     crop = crop.resize((max(1, round(crop.width * s)), max(1, round(crop.height * s))), Image.LANCZOS)
-    font = _font(26)
+    font = _font(FONT)
     probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    col = max([probe.textlength(lb["name"], font=font) for lb in labels] + [120]) + 60
+    col = max([probe.textlength(lb["name"], font=font) for lb in labels] + [120]) + 50
     W, H = crop.width, crop.height
     top = 20
     img = Image.new("RGB", (int(W + 2 * col), H + 2 * top), "white")
@@ -170,7 +171,7 @@ def render(rgb: np.ndarray, mask: np.ndarray, labels: list[dict]) -> Image.Image
         last = -1e9
         rows = []
         for name, px, py, _ in side:  # keep the names apart, then pull them up if the column runs off the bottom
-            ty = max(py, last + 36)
+            ty = max(py, last + FONT + 8)
             rows.append([name, px, py, ty])
             last = ty
         over = last - (H + top - 10)
@@ -178,7 +179,7 @@ def render(rgb: np.ndarray, mask: np.ndarray, labels: list[dict]) -> Image.Image
             for r in rows:
                 r[3] -= over
             for i in range(len(rows) - 2, -1, -1):
-                rows[i][3] = min(rows[i][3], rows[i + 1][3] - 36)
+                rows[i][3] = min(rows[i][3], rows[i + 1][3] - FONT - 8)
         for name, px, py, ty in rows:
             tw = d.textlength(name, font=font)
             if left:
