@@ -114,7 +114,7 @@ class Pipeline:
         e.keys = keys
 
     def _refresh_previews(self) -> None:
-        """Redraw numbered previews made at an older (lower) resolution, so they stay sharp when zoomed."""
+        """Redraw numbered previews of an older look or resolution (sharp when zoomed, current marks)."""
         m = self.manifest
         for e in self.manifest.layers.values():
             for k in e.masters():
@@ -122,14 +122,12 @@ class Pipeline:
                     continue
                 p = m.abs(e, k.regions_file)
                 try:
-                    with Image.open(p) as im:
-                        w = im.width
                     with Image.open(m.abs(e, k.key_file)) as im:
-                        want = max(V.VLM_W, min(V.PREVIEW_W, im.width))
+                        frame_w = im.width
                 except OSError:
                     continue
-                if w != want:
-                    V.preview(V._on_white(self._key_rgba(e, k)), self._regions(e, k)).save(p)
+                if not V.preview_current(p, frame_w):
+                    V.save_preview(V.preview(V._on_white(self._key_rgba(e, k)), self._regions(e, k)), p)
 
     def _restore_outputs(self) -> None:
         """Re-create colour files from saved VLM answers if they're missing (free, local)."""
@@ -223,7 +221,7 @@ class Pipeline:
         base = Path(k.key_file).stem
         rel = f"regions/{base}_regions.png"
         if k.regions_file != rel or not self.manifest.abs(e, rel).exists():
-            V.preview(V._on_white(self._key_rgba(e, k)), regs).save(self.manifest.sub(e, "regions") / f"{base}_regions.png")
+            V.save_preview(V.preview(V._on_white(self._key_rgba(e, k)), regs), self.manifest.sub(e, "regions") / f"{base}_regions.png")
             k.regions_file = rel
 
     # --------------------------------------------------------------- regions
@@ -259,7 +257,7 @@ class Pipeline:
         self._reg_cache[(e.uid, k.idx, k.hash)] = regs
         if redraw:  # the numbered preview shows the old numbers: redraw it
             base = Path(k.key_file).stem
-            V.preview(V._on_white(self._key_rgba(e, k)), regs).save(self.manifest.sub(e, "regions") / f"{base}_regions.png")
+            V.save_preview(V.preview(V._on_white(self._key_rgba(e, k)), regs), self.manifest.sub(e, "regions") / f"{base}_regions.png")
             k.regions_file = f"regions/{base}_regions.png"
 
     def _write_outputs(self, e: M.LayerEntry, k: M.KeyFrame) -> None:
@@ -269,7 +267,7 @@ class Pipeline:
         regs = self._regions(e, k)
         base = Path(k.key_file).stem
         if not (k.regions_file and m.abs(e, k.regions_file).exists()):
-            V.preview(V._on_white(self._key_rgba(e, k)), regs).save(m.sub(e, "regions") / f"{base}_regions.png")
+            V.save_preview(V.preview(V._on_white(self._key_rgba(e, k)), regs), m.sub(e, "regions") / f"{base}_regions.png")
             k.regions_file = f"regions/{base}_regions.png"
         V.fill(regs, k.vlm_mapping, pal).save(m.sub(e, "color") / f"{base}_color.png")
         k.color_file = f"color/{base}_color.png"

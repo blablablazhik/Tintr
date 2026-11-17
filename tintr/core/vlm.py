@@ -365,6 +365,22 @@ def annotate(base: Image.Image, regions: Regions, width: int = VLM_W,
 
 
 PREVIEW_W = 3072  # numbered preview in the UI: sharp when zoomed in, same look as the VLM image when fitted
+PREVIEW_VER = "2"  # bump when the look of the marks changes: older previews are redrawn on connect
+
+
+def save_preview(im: Image.Image, path: Path) -> None:
+    from PIL.PngImagePlugin import PngInfo
+    info = PngInfo()
+    info.add_text("tintr-preview", PREVIEW_VER)
+    im.save(path, pnginfo=info)
+
+
+def preview_current(path: Path, frame_w: int) -> bool:
+    try:
+        with Image.open(path) as im:
+            return im.width == max(VLM_W, min(PREVIEW_W, frame_w)) and im.text.get("tintr-preview") == PREVIEW_VER
+    except OSError:
+        return False
 
 
 def preview(base: Image.Image, regions: Regions) -> Image.Image:
