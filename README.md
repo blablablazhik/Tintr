@@ -53,6 +53,12 @@
   кольоровий шар отримує латинську назву (`Anim_1_color`). Шлях до проекту бажано без кирилиці.
 
 ## Розробка
+Запуск у dev-режимі (з DevTools) у терміналі PowerShell з кореня проекту:
+```powershell
+$env:TINTR_DEBUG = "1"; .venv\Scripts\python.exe run.py
+```
+
+Встановлення й інші команди:
 ```
 uv venv .venv --python 3.12
 uv pip install --python .venv\Scripts\python.exe -r requirements.txt pyinstaller
