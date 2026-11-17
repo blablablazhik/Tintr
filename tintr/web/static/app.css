@@ -110,6 +110,12 @@ header { height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 
 .zoombar #zoom-pct { min-width: 44px; text-align: center; font-size: 12px; color: var(--fg2); font-variant-numeric: tabular-nums; }
 .zoombar .btn.sm.on { background: var(--raise); color: var(--fg); }
 .no-lines img.lines { display: none; }
+.help-btn { position: absolute; right: 12px; top: 12px; z-index: 3; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--border);
+  background: var(--pop); color: var(--fg2); font-size: 13px; font-weight: 600; }
+.help-btn:hover, .help-btn.on { color: var(--fg); border-color: var(--fg2); }
+.help { position: absolute; right: 12px; top: 44px; z-index: 3; display: grid; grid-template-columns: auto auto; gap: 5px 12px; align-items: baseline;
+  padding: 10px 12px; border-radius: 8px; background: rgba(11, 29, 42, .94); border: 1px solid var(--border); font-size: 12px; color: var(--fg2); max-width: 360px; }
+.help kbd { font: 11px var(--mono); color: var(--fg); white-space: nowrap; justify-self: end; }
 .frame.clickable { cursor: crosshair; }
 .frame.clickable.tool-brush, .frame.clickable.tool-eraser { cursor: none; }
 .frame.clickable.tool-bucket { cursor: cell; }

@@ -278,7 +278,7 @@ function centerView() {
       ${canAnchor ? `<button class="btn sm" data-act="set-anchor">Зробити якорем</button>` : ""}
       <button class="btn sm" data-act="export" ${S.busy ? "disabled" : ""}>Оновити ключі з TVPaint</button>
       <div class="modes" role="group" aria-label="Що показати">${modeBtns}</div></div>
-    <div class="stage" id="stage">${stageView(l, k)}</div>
+    <div class="stage" id="stage">${stageView(l, k)}${helpView()}</div>
     ${groupsView(l)}
   </main>`;
 }
@@ -749,6 +749,7 @@ async function onClick(e) {
     case "lines": toggleLines(); break;
     case "pipette": togglePipette(); break;
     case "tool": setTool(b.dataset.tool); break;
+    case "help": toggleHelp(); break;
     case "tpal": ui.toolPal = !ui.toolPal; $(".tpal").hidden = !ui.toolPal; break;
     case "tcolor":
       setColor(b.dataset.c); ui.toolPal = false; $(".tpal").hidden = true;
@@ -1087,6 +1088,35 @@ function updateCursor() {
 document.addEventListener("mousemove", (e) => { lastMouse = { x: e.clientX, y: e.clientY }; updateCursor(); });
 document.addEventListener("wheel", () => requestAnimationFrame(updateCursor), { passive: true });
 
+// ---------- shortcut hint: a "?" in the corner of the stage, hidden by default (the choice is remembered)
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode etc. */ } },
+};
+ui.help = store.get("tintr.help") === "1";
+
+const SHORTCUTS = [
+  ["← →", "попередній / наступний ключ"], ["A", "якір замість ключа"], ["L", "лайн увімк. / вимк."],
+  ["F або 0", "вписати (100%)"], ["+ −", "масштаб; колесо — до курсора"], ["Пробіл+тягнути", "рухати кадр"],
+  ["V B E G I", "вибір · пензель · гумка · заливка · піпетка"], ["Alt+клік", "колір з кадру (пензель)"],
+  ["[ ]", "розмір пензля"], ["Ctrl+Z", "скасувати; Ctrl+Shift+Z — повторити"],
+  ["I над референсом", "піпетка в палітру"], ["Esc", "закрити / вийти"], ["H або ?", "ця підказка"],
+];
+
+function helpView() {
+  const rows = SHORTCUTS.map(([k, t]) => `<kbd>${esc(k)}</kbd><span>${esc(t)}</span>`).join("");
+  return `<button class="help-btn ${ui.help ? "on" : ""}" data-act="help" title="Гарячі клавіші (H)" aria-label="Гарячі клавіші" aria-expanded="${ui.help}">?</button>
+    <div class="help" id="help" ${ui.help ? "" : "hidden"}>${rows}</div>`;
+}
+
+function toggleHelp(on = !ui.help) {
+  ui.help = on;
+  store.set("tintr.help", on ? "1" : "0");
+  const h = $("#help"), b = $(".help-btn");
+  if (h) h.hidden = !on;
+  if (b) { b.classList.toggle("on", on); b.setAttribute("aria-expanded", String(on)); }
+}
+
 // ---------- region popover
 async function onFrameClick(e) {
   if (ui.panned) { ui.panned = false; return; }  // the press was a pan drag
@@ -1125,7 +1155,7 @@ document.addEventListener("mousedown", (e) => {
   if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame")) closePopover();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closePopover(); closeModal(); toggleAnchor(false); togglePipette(false); return; }
+  if (e.key === "Escape") { closePopover(); closeModal(); toggleAnchor(false); togglePipette(false); if (ui.help) toggleHelp(false); return; }
   if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") { e.preventDefault(); undoRedo(e.shiftKey); return; }
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyY") { e.preventDefault(); undoRedo(true); return; }
@@ -1136,6 +1166,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "0" || e.code === "KeyF") zoomCmd("fit");  // F: any keyboard layout
   else if (e.code === "KeyA") toggleAnchor();  // any keyboard layout
   else if (e.code === "KeyL") toggleLines();
+  else if (e.code === "KeyH" || e.key === "?") toggleHelp();
   else if (e.code === "KeyI") { if (ui.overRef) togglePipette(); else setTool("picker"); }  // over the reference: into the palette
   else if (e.code === "KeyV") setTool("select");
   else if (e.code === "KeyB") setTool("brush");
