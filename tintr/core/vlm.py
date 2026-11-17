@@ -599,24 +599,32 @@ def anchor_prompt(n_regions: int, n_details: int = 0) -> str:
               "inner shirt, background, ...) and assign exactly one palette colour that this part has in the reference.\n"
             + _CRAFT + _RULES % n_regions)
 
-PROMPT_FOLLOW = """You are a professional animation ink-and-paint artist doing paint-bucket colouring of an animation.
+def follow_prompt(anchor_mapping: dict, n_regions: int, n_details: int = 0) -> str:
+    """Prompt for a key coloured after the approved anchor; with n_details zoomed details of the NEW frame
+    (Images 5..) framed in matching colours on Image 4."""
+    det = "".join(f"Image {5 + z}: ZOOMED detail of the area inside the {FRAME_NAMES[z]} rectangle of Image 4 (its border "
+                  "has the same colour), with the same numbers. Use it to read small regions exactly; use Image 4 to "
+                  "see what surrounds the area (which part of the body it belongs to).\n" for z in range(n_details))
+    k = 5 + n_details
+    return ("""You are a professional animation ink-and-paint artist doing paint-bucket colouring of an animation.
 An earlier key frame of the SAME character in the SAME shot was coloured and APPROVED by the art director.
 Colour the new key frame so every part gets exactly the same colour as in the approved frame.
 
 Image 1: APPROVED frame with its regions marked (see MARKS below).
 Image 2: APPROVED frame as coloured (the ground truth for colours).
 Image 3: NEW frame to colour (clean line-art).
-Image 4: NEW frame with every paintable region marked (see MARKS below).
-Image 5: the character colour reference (colour model sheet).
-Image 6: the allowed colour palette; each swatch is labelled C1, C2, ...
+Image 4: NEW frame with every paintable region marked (see MARKS below)."""
+            + (" Coloured rectangles show where the zoomed details below come from." if n_details else "") + "\n" + det
+            + f"""Image {k}: the character colour reference (colour model sheet).
+Image {k + 1}: the allowed colour palette; each swatch is labelled C1, C2, ...
 
 Approved frame region assignments (region: part = colour):
-%s
+""" + describe_mapping(anchor_mapping) + """
 
 For EVERY numbered region of the NEW frame (Image 4) find the matching part in the approved frame and use
 the same colour. Numbers of the new frame are NOT the same as numbers of the approved frame; match by
-what the part is, its position and shape. Only if a part does not exist in the approved frame, use Image 5.
-""" + _RULES
+what the part is, its position and shape. Only if a part does not exist in the approved frame, use the reference.
+""" + _CRAFT + _RULES % n_regions)
 
 
 def describe_mapping(mapping: dict) -> str:
@@ -815,7 +823,8 @@ class VLMColorizer:
         (status or (lambda _s: None))("завантаження")
         clean = _on_white(key_rgba)
         box = lines_box(key_rgba)
-        ann = annotate(clean, regions, box=box, margin=LABEL_MARGIN)
+        details = detail_boxes(regions, box) if box else []  # dense spots of the NEW frame, zoomed with context
+        ann = framed_annotate(clean, regions, box, details)
         a_clean = _on_white(anchor_rgba)
         a_box = lines_box(anchor_rgba)
         a_ann = annotate(a_clean, anchor_regions, box=a_box, margin=LABEL_MARGIN)
@@ -823,8 +832,8 @@ class VLMColorizer:
         a_col.alpha_composite(anchor_fill)
         a_col.alpha_composite(Image.fromarray(anchor_rgba, "RGBA"))
         a_col = view(a_col.convert("RGB"), a_box, margin=LABEL_MARGIN)[0]
-        urls = self._upload_all([(a_ann, "anchor_regions.jpg"), (a_col, "anchor_color.jpg"),
-                                 (view(clean, box, margin=LABEL_MARGIN)[0], "clean.jpg"), (ann, "regions.jpg"),
-                                 *self._ref_items(ref_path, pal)], label)
-        prompt = PROMPT_FOLLOW % (describe_mapping(anchor_mapping), regions.n)
-        return self._ask(prompt, urls, label, status)
+        items = [(a_ann, "anchor_regions.jpg"), (a_col, "anchor_color.jpg"),
+                 (view(clean, box, margin=LABEL_MARGIN)[0], "clean.jpg"), (ann, "regions.jpg")]
+        items += [(detail_image(clean, regions, b, c), f"detail{n}.jpg") for n, (b, c) in enumerate(zip(details, FRAME_COLS), 1)]
+        urls = self._upload_all(items + self._ref_items(ref_path, pal), label)
+        return self._ask(follow_prompt(anchor_mapping, regions.n, len(details)), urls, label, status)
