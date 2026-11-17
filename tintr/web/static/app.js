@@ -504,29 +504,47 @@ function toggleRef(on = !ui.showRef) {
 }
 
 function groupsView(l) {
+  // one row: the anchor first (marked on the thumbnail), the unique keys, then the repeats, folded by default
+  // (they take the colour of their original for free); a selected repeat unfolds them
   if (!l.keys.some((k) => k.key)) return "";
-  const anchor = l.keys.filter((k) => k.idx === l.anchorIdx);
-  const uniq = l.keys.filter((k) => k.dup == null && k.idx !== l.anchorIdx);
+  const main = [...l.keys.filter((k) => k.idx === l.anchorIdx), ...l.keys.filter((k) => k.dup == null && k.idx !== l.anchorIdx)];
   const dups = l.keys.filter((k) => k.dup != null);
-  const a = anchor[0];
-  const aHint = !a ? "" : l.anchorApproved ? "затверджено" : a.colored ? "чекає затвердження" : "ще не розфарбовано";
-  const uDone = uniq.filter((k) => k.colored && k.followed).length;
-  const uHint = !uniq.length ? "" : !l.anchorApproved ? `${uniq.length} · після затвердження якоря ≈ ${money(uniq.length * S.estFollow)}`
-    : uDone === uniq.length ? "усі готові" : `${uDone} з ${uniq.length} готово`;
-  const group = (title, hint, keys, cls = "") => keys.length ? `<div class="group ${cls}"><div class="group-head"><span class="eyebrow">${title}</span><span class="hint">${esc(hint)}</span></div>
-    <div class="group-keys">${keys.map((k) => kfHtml(l, k)).join("")}</div></div>` : "";
-  return `<section class="groups" aria-label="Ключові кадри">${group("Якір", aHint, anchor, "anchor-group")}${group("Унікальні", uHint, uniq)}${group("Повтори", "колір оригіналу, безкоштовно", dups)}</section>`;
+  const open = ui.showDups || dups.some((k) => k.idx === ui.idx);
+  const more = dups.length ? `<button class="kf-more" data-act="dups" aria-expanded="${open}"
+    title="${open ? "Згорнути повтори" : "Повтори беруть колір оригіналу, безкоштовно"}"><b>${open ? "−" : "+"}${dups.length}</b><span>${open ? "згорнути" : "повтори"}</span></button>` : "";
+  return `<section class="strip" id="strip" aria-label="Ключові кадри">${main.map((k) => kfHtml(l, k)).join("")}${more}${open ? dups.map((k) => kfHtml(l, k)).join("") : ""}</section>`;
+}
+
+function keyMenu(e) {
+  // right click on a key in the strip: make it the anchor
+  const kf = e.target.closest(".kf"), l = curLayer();
+  if (!kf || !l) return;
+  e.preventDefault();
+  const k = l.keys.find((x) => x.idx === +kf.dataset.idx), m = master(l, k);
+  const isAnchor = m.idx === l.anchorIdx;
+  const pop = $("#popover");
+  pop.innerHTML = `<span class="t">Ключ #${k.idx}${k.dup != null ? ` · повтор #${k.dup}` : ""}</span>
+    <button class="btn sm" data-k="anchor" ${isAnchor || S.busy ? "disabled" : ""}>${isAnchor ? "Це вже якір" : `Зробити ${k.dup != null ? `оригінал #${m.idx}` : "його"} якорем`}</button>`;
+  pop.hidden = false;
+  pop.style.left = `${Math.min(window.innerWidth - 250, e.clientX + 4)}px`;
+  pop.style.top = `${Math.min(window.innerHeight - pop.offsetHeight - 12, e.clientY + 4)}px`;
+  pop.onclick = (ev) => {
+    if (!ev.target.closest('[data-k="anchor"]')) return;
+    closePopover();
+    call("set_anchor", l.uid, m.idx);
+  };
 }
 
 function kfHtml(l, k) {
   const live = ui.live[`${l.uid}:${k.idx}`];
   const thumb = k.colorThumb ? `<img src="${k.colorThumb}" alt=""><img src="${k.keyThumb}" alt="">` : `<img src="${k.keyThumb}" alt="">`;
-  const cls = ["kf", k.idx === ui.idx ? "sel" : "", k.idx === l.anchorIdx ? "anchor" : "", k.dup != null ? "dup" : ""].join(" ");
+  const isAnchor = k.idx === l.anchorIdx;
+  const cls = ["kf", k.idx === ui.idx ? "sel" : "", isAnchor ? "anchor" : "", k.dup != null ? "dup" : ""].join(" ");
   return `<button class="${cls}" data-act="key" data-idx="${k.idx}" title="${k.error ? esc(k.error) : ""}">
     <span class="thumb ${k.colorThumb ? "paper" : ""}">${thumb}
       <span class="live" data-live="${esc(l.uid)}:${k.idx}" ${live ? "" : "hidden"}><span>${live ? esc(liveText(live)) : ""}</span></span>
-      ${k.error ? '<span class="err"></span>' : ""}</span>
-    <span class="meta"><b>#${k.idx}</b><span>кадр ${k.start} · ${k.length}</span></span></button>`;
+      ${k.error ? '<span class="err"></span>' : ""}${isAnchor ? '<span class="kf-tag">якір</span>' : ""}</span>
+    <span class="meta"><b>#${k.idx}</b><span>${k.dup != null ? `повтор #${k.dup}` : `кадр ${k.start} · ${k.length}`}</span></span></button>`;
 }
 
 function liveText(live) {
@@ -765,6 +783,8 @@ function bindMain() {
   bindPipette();
   fitFrames();
   applyAllZooms();
+  const strip = $("#strip");
+  if (strip) strip.addEventListener("contextmenu", keyMenu);
   const sel = document.querySelector(".kf.sel");
   if (sel) sel.scrollIntoView({ block: "nearest", inline: "nearest" });
   for (const inp of document.querySelectorAll('[data-act="isel"]')) inp.addEventListener("change", () => {
@@ -794,6 +814,14 @@ async function onClick(e) {
     case "pipette": togglePipette(); break;
     case "tool": setTool(b.dataset.tool); break;
     case "help": toggleHelp(); break;
+    case "dups": {  // from what is shown (a selected repeat unfolds them); folding moves the selection to its original
+      ui.showDups = b.getAttribute("aria-expanded") !== "true";
+      store.set("tintr.showDups", ui.showDups ? "1" : "0");
+      const k = curKey();
+      if (!ui.showDups && k && k.dup != null) ui.idx = k.dup;
+      render();
+      break;
+    }
     case "tools-min": ui.toolsMin = !ui.toolsMin; ui.toolPal = false; store.set("tintr.toolsMin", ui.toolsMin ? "1" : "0"); render(); break;
     case "tpal": ui.toolPal = !ui.toolPal; $(".tpal").hidden = !ui.toolPal; break;
     case "tcolor":
@@ -1144,6 +1172,7 @@ const store = {
 };
 ui.help = store.get("tintr.help") === "1";
 ui.toolsMin = store.get("tintr.toolsMin") === "1";
+ui.showDups = store.get("tintr.showDups") === "1";  // repeats in the strip: folded unless asked
 
 const SHORTCUTS = [
   ["← →", "попередній / наступний ключ"], ["A", "якір замість ключа"], ["R", "референс замість ключа"], ["L", "лайн увімк. / вимк."],
@@ -1201,7 +1230,7 @@ async function onFrameClick(e) {
 }
 function closePopover() { $("#popover").hidden = true; }
 document.addEventListener("mousedown", (e) => {
-  if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame")) closePopover();
+  if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame") && e.button !== 2) closePopover();
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closeMenus(); closePopover(); closeModal(); toggleAnchor(false); toggleRef(false); togglePipette(false); if (ui.help) toggleHelp(false); return; }

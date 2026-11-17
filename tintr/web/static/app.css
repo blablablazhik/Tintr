@@ -1,4 +1,4 @@
-/* Layout: header · [clips tree | preview + key groups | reference + action] · status line.
+/* Layout: header · [clips tree | preview + dock + key strip | next action + reference] · status line.
    Brand palette: Black 6 C ground, Ivory text, yellow accent, periwinkle for "done". */
 :root {
   --bg: #021019;
@@ -152,13 +152,13 @@ header .spend { margin-left: 4px; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: 14px; color: var(--muted); text-align: center; max-width: 420px; line-height: 1.6; }
 .empty b { color: var(--fg); font-size: 15px; font-weight: 600; }
 
-.groups { height: 168px; flex-shrink: 0; display: flex; gap: 28px; padding: 14px 20px 16px; overflow-x: auto; overflow-y: hidden; }
-.group { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
-.group-head { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
-.group-head .hint { font-size: 11px; color: var(--faint); }
-.group-keys { display: flex; gap: 12px; padding: 8px 8px 0; }
-.group.anchor-group { border: 1px solid var(--accent); border-radius: 10px; padding: 6px 10px 8px; margin: -7px 0 0 -11px; background: var(--accent-soft); }
-.kf { width: 132px; display: flex; flex-direction: column; gap: 6px; padding: 0; border: 0; background: transparent; text-align: left; }
+.strip { flex-shrink: 0; display: flex; align-items: flex-start; gap: 14px; padding: 18px 28px 14px; overflow-x: auto; overflow-y: hidden; }
+.kf-tag { position: absolute; left: 4px; top: 4px; padding: 1px 6px; border-radius: 4px; background: var(--accent); color: var(--bg); font-size: 10px; font-weight: 700; letter-spacing: .02em; }
+.kf-more { flex-shrink: 0; width: 64px; height: 74px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  border: 1px dashed var(--dim); border-radius: 6px; background: transparent; color: var(--fg2); font-size: 11px; }
+.kf-more b { font-size: 15px; color: var(--fg); font-weight: 600; }
+.kf-more:hover { border-color: var(--fg2); }
+.kf { flex-shrink: 0; width: 132px; display: flex; flex-direction: column; gap: 6px; padding: 0; border: 0; background: transparent; text-align: left; }
 .kf .thumb { position: relative; height: 74px; border-radius: 6px; background: #FFFFFF; overflow: hidden; outline-offset: 2px; }
 .kf .thumb.paper { background: var(--paper); }
 .kf .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
