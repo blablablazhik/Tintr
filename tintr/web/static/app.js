@@ -7,7 +7,7 @@ const ui = {
   uid: null, idx: null, mode: null, view: "main",
   log: [], logOpen: false, live: {},
   insertSel: null, save: null, port: null, connectError: "",
-  zoom: { s: 1, x: 0, y: 0 },        // preview zoom (1 = fit) and pan in px; kept across keys/modes
+  zooms: {},                         // zoom (1 = fit) + pan per view: main, ref, anchor; kept across keys/modes
   panned: false,                     // last mouse press was a pan drag, not a click
 };
 
@@ -280,16 +280,10 @@ function stageView(l, k) {
     return `<div class="empty"><b>Ключі ще не виведені</b>Tintr збере ключові кадри цього кліпу з TVPaint одним викликом і одразу знайде на них області для розфарбування. Це безкоштовно.
       <button class="btn primary" data-act="export" ${S.busy ? "disabled" : ""}>Вивести ключі</button></div>`;
   }
-  const anchor = l.keys.find((x) => x.idx === l.anchorIdx);
-  const sideBySide = ui.mode === "color" && anchor && anchor.colored && k.idx !== anchor.idx && master(l, k).idx !== anchor.idx;
   const big = frameHtml(k, ui.mode, true) + zoomBar();
-  if (!sideBySide) {
-    const hint = ui.mode === "regions" ? "Це бачить Gemini. Клік по області — змінити колір."
-      : ui.mode === "color" ? "Клік по області — змінити колір." : "";
-    return big + (hint && master(l, k).colored ? `<span class="stage-hint">${hint}</span>` : ui.mode === "regions" ? `<span class="stage-hint">Області, які бачить Gemini.</span>` : "");
-  }
-  return `<div class="figure" style="flex:0 0 28%">${frameHtml(anchor, "color", false, "anchor-ref")}<div class="cap">Якір #${anchor.idx}</div></div>
-    ${ICON.arrow}<div class="figure" style="flex:1">${big}<div class="cap">Ключ #${k.idx} · клік по області — виправити колір</div></div>`;
+  const hint = ui.mode === "regions" ? "Це бачить Gemini. Клік по області — змінити колір."
+    : ui.mode === "color" ? "Клік по області — змінити колір." : "";
+  return big + (hint && master(l, k).colored ? `<span class="stage-hint">${hint}</span>` : ui.mode === "regions" ? `<span class="stage-hint">Області, які бачить Gemini.</span>` : "");
 }
 
 function frameHtml(k, mode, main, extra = "") {
@@ -299,7 +293,7 @@ function frameHtml(k, mode, main, extra = "") {
   else if (mode === "regions") imgs = `<img src="${k.regions}" alt="">`;
   else imgs = `<img src="${k.key}" alt="">`;
   const click = main && mode !== "line" ? "clickable" : "";
-  return `<div class="frame ${paper} ${click} ${extra}" ${main ? 'id="frame"' : ""} data-w="${W}" data-h="${H}" style="aspect-ratio:${W}/${H}"><div class="zoom" ${main ? 'id="zoom"' : ""}>${imgs}</div></div>`;
+  return `<div class="frame ${paper} ${click} ${extra}" ${main ? 'id="frame" data-zoom="main"' : ""} data-w="${W}" data-h="${H}" style="aspect-ratio:${W}/${H}"><div class="zoom" ${main ? 'id="zoom"' : ""}>${imgs}</div></div>`;
 }
 
 function fitFrames() {
@@ -315,81 +309,98 @@ function fitFrames() {
     const s = Math.min(maxW / W, maxH / H);
     f.style.width = `${Math.max(40, Math.floor(W * s))}px`;
   }
-  applyZoom();
+  applyAllZooms();
 }
 
 // ---------- zoom / pan of the main preview (line, regions, colour)
 function zoomBar() {
   return `<div class="zoombar" role="group" aria-label="Масштаб">
     <button class="icon-btn" data-act="zoom" data-z="out" title="Зменшити (−)" aria-label="Зменшити">−</button>
-    <span id="zoom-pct">${Math.round(ui.zoom.s * 100)}%</span>
+    <span id="zoom-pct">${Math.round(zstate("main").s * 100)}%</span>
     <button class="icon-btn" data-act="zoom" data-z="in" title="Збільшити (+)" aria-label="Збільшити">+</button>
     <button class="btn sm" data-act="zoom" data-z="px" title="Піксель у піксель">1:1</button>
     <button class="btn sm" data-act="zoom" data-z="fit" title="Вписати (0)">Вписати</button></div>`;
 }
 
-function applyZoom() {
-  const fr = $("#frame"), z = $("#zoom");
-  if (!fr || !z) return;
-  const Z = ui.zoom, w = fr.clientWidth, h = fr.clientHeight;
+// every zoomable view: an element with data-zoom="<name>" holding a .zoom layer that is scaled and moved
+const zoomEl = (name) => document.querySelector(`[data-zoom="${name}"]`);
+const zstate = (name) => ui.zooms[name] || (ui.zooms[name] = { s: 1, x: 0, y: 0 });
+
+function applyZoom(name = "main") {
+  const el = zoomEl(name), z = el && el.querySelector(".zoom");
+  if (!z) return;
+  const Z = zstate(name), w = el.clientWidth, h = el.clientHeight;
   Z.s = Math.min(24, Math.max(1, Z.s));
   Z.x = Math.min(0, Math.max(w - w * Z.s, Z.x));
   Z.y = Math.min(0, Math.max(h - h * Z.s, Z.y));
   z.style.transform = `translate(${Z.x}px, ${Z.y}px) scale(${Z.s})`;
-  fr.classList.toggle("zoomed", Z.s > 1);
-  const pct = $("#zoom-pct");
-  if (pct) pct.textContent = `${Math.round(Z.s * 100)}%`;
+  el.classList.toggle("zoomed", Z.s > 1);
+  if (name === "main") {
+    const pct = $("#zoom-pct");
+    if (pct) pct.textContent = `${Math.round(Z.s * 100)}%`;
+  }
 }
 
-function zoomTo(s, cx, cy) {
-  // keep the image point under (cx, cy) (client px; default: frame centre) in place
-  const fr = $("#frame");
-  if (!fr) return;
-  const r = fr.getBoundingClientRect(), Z = ui.zoom;
+function applyAllZooms() { for (const el of document.querySelectorAll("[data-zoom]")) applyZoom(el.dataset.zoom); }
+
+function zoomTo(name, s, cx, cy) {
+  // keep the image point under (cx, cy) (client px; default: the view's centre) in place
+  const el = zoomEl(name);
+  if (!el) return;
+  const r = el.getBoundingClientRect(), Z = zstate(name);
   if (cx == null) { cx = r.left + r.width / 2; cy = r.top + r.height / 2; }
   s = Math.min(24, Math.max(1, s));
   const lx = (cx - r.left - Z.x) / Z.s, ly = (cy - r.top - Z.y) / Z.s;
   Z.x = cx - r.left - lx * s; Z.y = cy - r.top - ly * s; Z.s = s;
-  applyZoom();
+  applyZoom(name);
 }
 
 function zoomCmd(cmd) {
-  const fr = $("#frame");
-  if (!fr) return;
+  const name = "main";
+  const el = zoomEl(name);
+  if (!el) return;
   closePopover();
-  if (cmd === "in") zoomTo(ui.zoom.s * 1.5);
-  else if (cmd === "out") zoomTo(ui.zoom.s / 1.5);
-  else if (cmd === "px") zoomTo(S.project.w / fr.clientWidth);
-  else { ui.zoom = { s: 1, x: 0, y: 0 }; applyZoom(); }
+  if (cmd === "in") zoomTo(name, zstate(name).s * 1.5);
+  else if (cmd === "out") zoomTo(name, zstate(name).s / 1.5);
+  else if (cmd === "px") zoomTo(name, S.project.w / el.clientWidth);
+  else { ui.zooms[name] = { s: 1, x: 0, y: 0 }; applyZoom(name); }
 }
 
-function bindZoom() {
-  const fr = $("#frame");
-  if (!fr) return;
-  fr.addEventListener("wheel", (e) => {
+function bindZoomable(name) {
+  // wheel zooms at the cursor; drag pans. On the main frame a left drag pans only when zoomed in
+  // (a click without moving still picks a region); elsewhere any left drag pans; middle drag always.
+  const el = zoomEl(name);
+  if (!el || el.dataset.zbound) return;
+  el.dataset.zbound = "1";
+  el.addEventListener("wheel", (e) => {
     e.preventDefault();
     closePopover();
-    zoomTo(ui.zoom.s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+    zoomTo(name, zstate(name).s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
   }, { passive: false });
-  fr.addEventListener("mousedown", (e) => {
-    // left drag pans when zoomed in (a click without moving still picks a region); middle drag always
+  el.addEventListener("mousedown", (e) => {
     ui.panned = false;
-    if (!(e.button === 1 || (e.button === 0 && ui.zoom.s > 1))) return;
+    const Z = zstate(name);
+    if (!(e.button === 1 || (e.button === 0 && (name !== "main" || Z.s > 1)))) return;
     e.preventDefault();
-    const x0 = e.clientX, y0 = e.clientY, zx = ui.zoom.x, zy = ui.zoom.y;
+    const x0 = e.clientX, y0 = e.clientY, zx = Z.x, zy = Z.y;
     const move = (ev) => {
       if (!ui.panned && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
       ui.panned = true;
-      fr.classList.add("panning");
-      ui.zoom.x = zx + ev.clientX - x0; ui.zoom.y = zy + ev.clientY - y0;
-      applyZoom();
+      el.classList.add("panning");
+      Z.x = zx + ev.clientX - x0; Z.y = zy + ev.clientY - y0;
+      applyZoom(name);
     };
-    const up = () => { fr.classList.remove("panning"); window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    const up = () => { el.classList.remove("panning"); window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   });
-  fr.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+  el.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+  el.addEventListener("dblclick", () => { if (name !== "main") { ui.zooms[name] = { s: 1, x: 0, y: 0 }; applyZoom(name); } });
 }
+
+function anchorOf(l) { const a = l && l.keys.find((x) => x.idx === l.anchorIdx); return a && a.colored ? a : null; }
+
+function anchorLayers(a) { return `<img src="${a.color}" alt=""><img src="${a.key}" alt="">`; }
 
 function groupsView(l) {
   if (!l.keys.some((k) => k.key)) return "";
@@ -401,9 +412,9 @@ function groupsView(l) {
   const uDone = uniq.filter((k) => k.colored && k.followed).length;
   const uHint = !uniq.length ? "" : !l.anchorApproved ? `${uniq.length} · після затвердження якоря ≈ ${money(uniq.length * S.estFollow)}`
     : uDone === uniq.length ? "усі готові" : `${uDone} з ${uniq.length} готово`;
-  const group = (title, hint, keys) => keys.length ? `<div class="group"><div class="group-head"><span class="eyebrow">${title}</span><span class="hint">${esc(hint)}</span></div>
+  const group = (title, hint, keys, cls = "") => keys.length ? `<div class="group ${cls}"><div class="group-head"><span class="eyebrow">${title}</span><span class="hint">${esc(hint)}</span></div>
     <div class="group-keys">${keys.map((k) => kfHtml(l, k)).join("")}</div></div>` : "";
-  return `<section class="groups" aria-label="Ключові кадри">${group("Якір", aHint, anchor)}${group("Унікальні", uHint, uniq)}${group("Повтори", "колір оригіналу, безкоштовно", dups)}</section>`;
+  return `<section class="groups" aria-label="Ключові кадри">${group("Якір", aHint, anchor, "anchor-group")}${group("Унікальні", uHint, uniq)}${group("Повтори", "колір оригіналу, безкоштовно", dups)}</section>`;
 }
 
 function kfHtml(l, k) {
@@ -440,13 +451,16 @@ setInterval(() => { if (Object.keys(ui.live).length) renderLive(); }, 1000);
 function sideView() {
   const l = curLayer();
   if (!l) return `<aside class="side"></aside>`;
+  const a = anchorOf(l);
   const ref = l.refUrl
-    ? `<div class="ref"><img src="${l.refUrl}" alt="Референс ${esc(l.name)}"></div><span class="ref-name">${esc(l.ref)} · ${l.palette.length} кольорів у палітрі</span>
+    ? `<div class="ref zoomable ${a ? "with-anchor" : ""}" data-zoom="ref"><div class="zoom"><img src="${l.refUrl}" alt="Референс ${esc(l.name)}"></div></div><span class="ref-name">${esc(l.ref)} · ${l.palette.length} кольорів у палітрі</span>
        <div class="palette">${l.palette.map((p) => `<span title="${p.name}" style="background:${p.hex}"></span>`).join("")}</div>`
     : `<div class="ref none"><span>Референс не вибрано</span><button class="btn primary" data-act="ref">Оберіть референс</button></div>`;
   return `<aside class="side"><div class="side-head"><span class="eyebrow">Референс · ${esc(l.name)}</span>
     ${l.refUrl ? `<button class="link" data-act="ref" ${S.busy ? "disabled" : ""}>Змінити</button>` : ""}</div>
-    ${ref}<div class="grow"></div><div class="action" id="action">${actionView(l)}</div></aside>`;
+    ${ref}${a ? `<div class="side-head"><span class="eyebrow">Якір · ключ #${a.idx}</span></div>
+      <div class="anchor-view zoomable paper" data-zoom="anchor" style="aspect-ratio:${S.project.w}/${S.project.h}"><div class="zoom">${anchorLayers(a)}</div></div>` : ""}
+    <div class="grow"></div><div class="action" id="action">${actionView(l)}</div></aside>`;
 }
 
 function actionView(l) {
@@ -548,8 +562,9 @@ function bindMain() {
   const fr = $("#frame");
   if (fr && fr.classList.contains("clickable")) fr.addEventListener("click", onFrameClick);
   for (const img of document.querySelectorAll("#stage img")) img.addEventListener("load", fitFrames, { once: true });
-  bindZoom();
+  for (const el of document.querySelectorAll("#app [data-zoom]")) bindZoomable(el.dataset.zoom);
   fitFrames();
+  applyAllZooms();
   for (const inp of document.querySelectorAll('[data-act="isel"]')) inp.addEventListener("change", () => {
     if (inp.checked) ui.insertSel.add(inp.dataset.uid); else ui.insertSel.delete(inp.dataset.uid);
     render();
@@ -569,7 +584,7 @@ async function onClick(e) {
     case "folder": call("open_folder"); break;
     case "log": toggleLog(); break;
     case "view": ui.view = b.dataset.view; closePopover(); render(); break;
-    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zoom = { s: 1, x: 0, y: 0 }; closePopover(); render(); break;
+    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; closePopover(); render(); break;
     case "zoom": zoomCmd(b.dataset.z); break;
     case "key": ui.idx = +b.dataset.idx; closePopover(); render(); break;
     case "mode": ui.mode = b.dataset.mode; closePopover(); render(); break;
@@ -634,7 +649,8 @@ document.addEventListener("mousedown", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closePopover(); closeModal(); return; }
-  if (e.target.closest("input, textarea") || !$("#modal").hidden) return;
+  if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
+  if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "+" || e.key === "=") zoomCmd("in");
   else if (e.key === "-") zoomCmd("out");
   else if (e.key === "0") zoomCmd("fit");

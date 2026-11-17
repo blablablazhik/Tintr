@@ -121,6 +121,7 @@ header { height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 
 .group-head { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
 .group-head .hint { font-size: 11px; color: var(--faint); }
 .group-keys { display: flex; gap: 8px; }
+.group.anchor-group { border: 1px solid var(--accent); border-radius: 10px; padding: 6px 10px 8px; margin: -7px 0 0 -11px; background: var(--accent-soft); }
 .kf { width: 132px; display: flex; flex-direction: column; gap: 6px; padding: 0; border: 0; background: transparent; text-align: left; }
 .kf .thumb { position: relative; height: 74px; border-radius: 6px; background: #FFFFFF; overflow: hidden; outline-offset: 2px; }
 .kf .thumb.paper { background: var(--paper); }
@@ -141,6 +142,13 @@ header { height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 
 .side-head { display: flex; align-items: baseline; justify-content: space-between; }
 .ref { height: 300px; border-radius: 8px; background: var(--paper); display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; }
 .ref img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.ref.with-anchor { height: 240px; }
+.zoomable { position: relative; overflow: hidden; cursor: grab; }
+.zoomable .zoom { position: absolute; inset: 0; transform-origin: 0 0; }
+.zoomable .zoom img { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; pointer-events: none; -webkit-user-drag: none; }
+.zoomable.panning { cursor: grabbing; }
+.anchor-view { width: 100%; border-radius: 8px; outline: 1px solid var(--accent); flex-shrink: 0; }
+.paper { background: var(--paper); }
 .ref.none { background: var(--line); color: var(--muted); flex-direction: column; gap: 12px; }
 .ref-name { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .palette { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
