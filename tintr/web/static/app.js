@@ -750,6 +750,7 @@ async function onClick(e) {
     case "pipette": togglePipette(); break;
     case "tool": setTool(b.dataset.tool); break;
     case "help": toggleHelp(); break;
+    case "tools-min": ui.toolsMin = !ui.toolsMin; ui.toolPal = false; store.set("tintr.toolsMin", ui.toolsMin ? "1" : "0"); render(); break;
     case "tpal": ui.toolPal = !ui.toolPal; $(".tpal").hidden = !ui.toolPal; break;
     case "tcolor":
       setColor(b.dataset.c); ui.toolPal = false; $(".tpal").hidden = true;
@@ -809,7 +810,16 @@ function toolsView(l) {
   const btns = TOOLS.map(([id, n, key, tip]) => `<button class="tool ${ui.tool === id ? "on" : ""}" data-act="tool" data-tool="${id}" ${dis}
     title="${n} (${key}): ${tip}" aria-pressed="${ui.tool === id}">${n}<kbd>${key}</kbd></button>`).join("");
   const pal = l.palette.map((p) => `<button style="background:${p.hex}" class="${p.name === c.name ? "cur" : ""}" data-act="tcolor" data-c="${p.name}" title="${p.name} ${p.hex}"></button>`).join("");
-  return `<div class="tools" role="toolbar" aria-label="Інструменти малювання">${btns}
+  if (ui.toolsMin) {  // minimized: the active tool and colour only; the shortcuts keep working
+    const t = TOOLS.find(([id]) => id === ui.tool) || TOOLS[0];
+    return `<div class="tools min" role="toolbar" aria-label="Інструменти малювання">
+      <span class="tmin-tool" id="tmin-tool" title="Активний інструмент">${t[1]}<kbd>${t[2]}</kbd></span>
+      <button class="tcolor" data-act="tpal" style="background:${c.hex}" title="Колір пензля і заливки: ${c.name}" aria-label="Колір ${c.name}" ${dis}></button>
+      <button class="tmin-btn" data-act="tools-min" title="Розгорнути інструменти" aria-label="Розгорнути інструменти" aria-expanded="false">▸</button>
+      <div class="pal-grid tpal" ${ui.toolPal ? "" : "hidden"}>${pal}</div></div>`;
+  }
+  return `<div class="tools" role="toolbar" aria-label="Інструменти малювання">
+    <div class="thead"><span>Інструменти</span><button class="tmin-btn" data-act="tools-min" title="Згорнути інструменти" aria-label="Згорнути інструменти" aria-expanded="true">–</button></div>${btns}
     <label class="tsize" title="Розмір пензля в пікселях кадру ([ і ])"><input type="range" id="t-size" min="1" max="200" value="${ui.size}" ${dis}><span id="t-size-v">${ui.size}</span></label>
     <button class="tcolor" data-act="tpal" style="background:${c.hex}" title="Колір пензля і заливки: ${c.name}" aria-label="Колір ${c.name}" ${dis}></button>
     <div class="pal-grid tpal" ${ui.toolPal ? "" : "hidden"}>${pal}</div>
@@ -833,6 +843,8 @@ function setTool(t) {
   }
   const fr = $("#frame");
   if (fr && fr.classList.contains("clickable") && ui.mode === "color") fr.className = fr.className.replace(/tool-\w+/, `tool-${t}`);
+  const mt = $("#tmin-tool"), tt = TOOLS.find(([id]) => id === t);
+  if (mt && tt) mt.innerHTML = `${tt[1]}<kbd>${tt[2]}</kbd>`;
   const h = $("#stage-hint");
   if (h && ui.mode === "color") h.textContent = toolHint();
   updateCursor();
@@ -1094,6 +1106,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, v); } catch { /* private mode etc. */ } },
 };
 ui.help = store.get("tintr.help") === "1";
+ui.toolsMin = store.get("tintr.toolsMin") === "1";
 
 const SHORTCUTS = [
   ["← →", "попередній / наступний ключ"], ["A", "якір замість ключа"], ["L", "лайн увімк. / вимк."],
