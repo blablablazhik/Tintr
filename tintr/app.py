@@ -29,7 +29,9 @@ def main() -> int:
         return True
 
     window.events.closing += on_closing
-    webview.start(debug=os.environ.get("TINTR_DEBUG") == "1", private_mode=False)
+    icon = os.path.join(os.path.dirname(__file__), "web", "static", "tintr.ico")  # window + taskbar icon
+    webview.start(debug=os.environ.get("TINTR_DEBUG") == "1", private_mode=False,
+                  icon=icon if os.path.isfile(icon) else None)
     return 0
 
 

@@ -9,4 +9,4 @@ a = Analysis(["run.py"], pathex=["."], hiddenimports=hidden, excludes=excl,
              datas=[("tintr/web/static", "tintr/web/static")])
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, a.binaries, a.datas, name="Tintr", console=False, upx=False,
-          runtime_tmpdir=None)
+          runtime_tmpdir=None, icon="tintr/web/static/tintr.ico")
