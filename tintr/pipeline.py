@@ -25,7 +25,7 @@ from tintr.core import manifest as M
 from tintr.core import vlm as V
 from tintr.core.cost import CostTracker
 from tintr.core.dedupe import assign_duplicates, pixel_hash
-from tintr.core.palette import reference_palette
+from tintr.core.palette import layer_palette
 from tintr.core.vlm import AuthError, Cancelled
 from tintr.naming import key_basename
 from tintr.tvp import bridge
@@ -263,7 +263,7 @@ class Pipeline:
     def _write_outputs(self, e: M.LayerEntry, k: M.KeyFrame) -> None:
         """Numbered-regions preview + flat colour fill from k.vlm_mapping."""
         m = self.manifest
-        pal = reference_palette(Path(e.ref_path))
+        pal = self.palette(e)
         regs = self._regions(e, k)
         base = Path(k.key_file).stem
         if not (k.regions_file and m.abs(e, k.regions_file).exists()):
@@ -318,6 +318,11 @@ class Pipeline:
             if a and a.vlm_mapping and not e.anchor_approved:
                 out.append(e)
         return out
+
+    @staticmethod
+    def palette(e: M.LayerEntry):
+        """Colours of the layer: the reference palette + the user's extras (C1..Cn)."""
+        return layer_palette(Path(e.ref_path), e.extra_colors)
 
     @staticmethod
     def has_ref(e: M.LayerEntry) -> bool:
@@ -379,7 +384,7 @@ class Pipeline:
             t = time.time()
             status = lambda s, _u=e.uid, _i=k.idx: self.key_status(_u, _i, s)  # noqa: E731
             status("підготовка")
-            pal = reference_palette(Path(e.ref_path))
+            pal = self.palette(e)
             regs, fresh = self._regions_for_colouring(e, k)  # recolouring anyway: newest segmentation
             rgba = self._key_rgba(e, k)
             try:

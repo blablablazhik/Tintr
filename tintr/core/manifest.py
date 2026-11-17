@@ -62,6 +62,7 @@ class LayerEntry:
     anchor_version: int = 0
     anchor_approved_mapping: dict = field(default_factory=dict)
     missing: bool = False  # cached layer not found in TVPaint any more (rescan needed)
+    extra_colors: list = field(default_factory=list)  # "#RRGGBB" added with the pipette, after the ref palette
     keys: list[KeyFrame] = field(default_factory=list)
 
     @property

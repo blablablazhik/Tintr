@@ -23,7 +23,7 @@ from tintr import APP_NAME, __version__
 from tintr.config import Config, app_dir, get_api_key, set_api_key
 from tintr.core import manifest as M
 from tintr.core.models import catalog
-from tintr.core.palette import reference_palette
+from tintr.core.palette import hex_to_rgb, nearest
 from tintr.core.vlm import Cancelled
 from tintr.naming import TAG_RE
 from tintr.pipeline import Pipeline
@@ -184,7 +184,9 @@ class Api:
         pal = []
         if e.ref_path and Path(e.ref_path).exists():
             try:
-                pal = [{"name": f"C{i}", "hex": _hex(c)} for i, c in enumerate(reference_palette(Path(e.ref_path)), 1)]
+                cols = self._pl.palette(e)
+                first_extra = len(cols) - len(e.extra_colors)
+                pal = [{"name": f"C{i}", "hex": _hex(c), "extra": i > first_extra} for i, c in enumerate(cols, 1)]
             except Exception:  # noqa: BLE001
                 pal = []
         keys = []
@@ -368,6 +370,49 @@ class Api:
         e = self._entry(uid)
         self._pl.set_region_color(e, e.key(int(idx)), int(region), str(color))
         self._on_log(f"  {_short(e.layer_name)} #{idx}: область {region} → {color}")
+        return {"ok": True, "state": self._state()}
+
+    def add_palette_color(self, uid: str, hex_color: str) -> dict:
+        """Pipette from the reference: a colour the palette missed. It goes to the end of the layer
+        palette (names of the other colours stay) and to Gemini on the next requests."""
+        if g := self._guard():
+            return g
+        e = self._entry(uid)
+        if not self._pl.has_ref(e):
+            return {"ok": False, "error": "Спершу оберіть референс."}
+        try:
+            rgb = hex_to_rgb(hex_color)
+        except ValueError:
+            return {"ok": False, "error": f"Не колір: {hex_color}"}
+        i, d = nearest(self._pl.palette(e), rgb)
+        if d < 6:  # the same colour within ΔE 6 (as the palette merges its own colours)
+            return {"ok": True, "name": f"C{i + 1}", "exists": True, "state": self._state()}
+        e.extra_colors.append(_hex(rgb))
+        self._pl.manifest.save()
+        name = f"C{len(self._pl.palette(e))}"
+        self._on_log(f"  {_short(e.layer_name)}: додано колір {name} {_hex(rgb)}")
+        return {"ok": True, "name": name, "exists": False, "state": self._state()}
+
+    def remove_palette_color(self, uid: str, name: str) -> dict:
+        """Remove a pipette colour that no region uses. Later extras move down by one name."""
+        if g := self._guard():
+            return g
+        e = self._entry(uid)
+        n = int(str(name).lstrip("C"))
+        first = len(self._pl.palette(e)) - len(e.extra_colors) + 1  # name number of the first extra
+        if n < first:
+            return {"ok": False, "error": "Кольори з референсу не видаляються, лише додані піпеткою."}
+        maps = [k.vlm_mapping for k in e.keys] + [e.anchor_approved_mapping]
+        if any(v.get("color") == f"C{n}" for mp in maps for v in mp.values()):
+            return {"ok": False, "error": f"Колір C{n} використовується на кадрах. Спершу перефарбуйте ці області."}
+        del e.extra_colors[n - first]
+        for mp in maps:
+            for v in mp.values():
+                c = v.get("color", "")
+                if c.startswith("C") and c[1:].isdigit() and int(c[1:]) > n:
+                    v["color"] = f"C{int(c[1:]) - 1}"
+        self._pl.manifest.save()
+        self._on_log(f"  {_short(e.layer_name)}: видалено колір C{n}")
         return {"ok": True, "state": self._state()}
 
     def pick_ref(self, uid: str) -> dict:
