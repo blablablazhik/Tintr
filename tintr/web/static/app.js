@@ -14,6 +14,7 @@ const ui = {
   hideLines: false,                  // coloured frames without the line art on top (KeyL), kept across keys
   pipette: false,                    // the next click on the reference adds its colour to the palette
   palNote: "",                       // short note under the palette (pipette result)
+  palHex: "#888888",                 // the colour typed / chosen in the "+" menu of the palette
   tool: "select", prevTool: "brush",  // drawing tools over the coloured frame: select brush eraser bucket picker
   size: 12, color: null,             // brush diameter in frame px; palette name ("C3") of brush and bucket
   toolPal: false, space: false,      // tool palette open; Space held (left drag pans)
@@ -631,7 +632,7 @@ function togglePipette(on = !ui.pipette) {
   if (on && !(l && l.refUrl)) on = false;
   ui.pipette = on;
   for (const el of document.querySelectorAll(".ref-pick")) el.classList.toggle("picking", on);
-  $('[data-act="pipette"]')?.classList.toggle("on", on);
+  $(".pal-add")?.classList.toggle("on", on);
   const prev = $("#pip-preview");
   if (prev && !on) prev.hidden = true;
   if (on) samplePickers();
@@ -650,6 +651,7 @@ function bindPipette() {
   if (!l) return;
   if (ui.pipette) samplePickers();
   for (const ref of document.querySelectorAll(".ref-pick")) bindRefPick(ref, l);
+  bindPalAdd();
   const pal = $("#palette");
   if (pal) pal.addEventListener("contextmenu", async (e) => {
     const sw = e.target.closest(".extra");
@@ -692,13 +694,52 @@ function sideView() {
        ${refLabelsView(l)}
        <div class="pal-head"><span class="eyebrow">Палітра · ${l.palette.length}</span><span class="pal-note" id="pal-note">${esc(ui.palNote)}</span></div>
        <div class="palette" id="palette">${l.palette.map((p) => `<span class="${p.extra ? "extra" : ""}" data-name="${p.name}" style="background:${p.hex}"
-         title="${p.name} ${p.hex}${p.extra ? " · додано піпеткою · права кнопка — видалити" : ""}"></span>`).join("")}<button class="pal-add ${ui.pipette ? "on" : ""}" data-act="pipette" ${S.busy ? "disabled" : ""}
-         title="Додати колір з референса (I): клік по референсу. Shift+клік — кілька" aria-label="Додати колір з референса">+</button></div>`
+         title="${p.name} ${p.hex}${p.extra ? " · додано вручну · права кнопка — видалити" : ""}"></span>`).join("")}${palAddView()}</div>`
     : `<div class="ref none"><span>Референс не вибрано</span><button class="btn primary" data-act="ref">Оберіть референс</button></div>`;
   return `<aside class="side"><div class="action" id="action">${actionView(l)}</div>
     <div class="side-head"><span class="eyebrow">Референс · ${esc(l.name)}</span>
     ${l.refUrl ? `<button class="link" data-act="ref" ${S.busy ? "disabled" : ""}>Змінити</button>` : ""}</div>
     ${ref}</aside>`;
+}
+
+function palAddView() {
+  // "+": the pipette over the reference, or any colour by its code / from the system colour picker
+  return `<div class="menu-wrap pal-add-wrap"><button class="pal-add ${ui.pipette ? "on" : ""}" data-act="menu" data-menu="pal-menu" aria-haspopup="menu"
+      aria-expanded="false" title="Додати колір у палітру" aria-label="Додати колір у палітру" ${S.busy ? "disabled" : ""}>+</button>
+    <div class="menu pal-menu" id="pal-menu" role="menu" hidden>
+      <button role="menuitem" data-act="pipette"><span>Піпетка з референса</span><small>I · клік по референсу, Shift+клік — кілька</small></button>
+      <div class="pal-custom"><input type="color" id="pal-color" value="${normHex(ui.palHex) || "#888888"}" title="Вибрати колір" aria-label="Вибрати колір">
+        <input type="text" id="pal-hex" value="${esc(ui.palHex)}" maxlength="7" spellcheck="false" autocomplete="off" placeholder="#RRGGBB" aria-label="Код кольору">
+        <button class="btn sm primary" data-act="pal-add-hex">Додати</button></div>
+    </div></div>`;
+}
+
+function normHex(v) {
+  // "#abc", "aabbcc", "#AABBCC" → "#AABBCC"; anything else → ""
+  let h = String(v || "").trim().replace(/^#/, "");
+  if (/^[0-9a-f]{3}$/i.test(h)) h = h.split("").map((c) => c + c).join("");
+  return /^[0-9a-f]{6}$/i.test(h) ? "#" + h.toUpperCase() : "";
+}
+
+async function addHexColor() {
+  const l = curLayer(), inp = $("#pal-hex"), hex = normHex(inp ? inp.value : ui.palHex);
+  if (!hex) { inp?.classList.add("bad"); inp?.focus(); return; }
+  closeMenus();
+  const r = await call("add_palette_color", l.uid, hex);
+  if (r.ok) palNote(r.exists ? `Такий колір уже є: ${r.name}` : `Додано ${r.name} ${hex}`);
+}
+
+function bindPalAdd() {
+  const pick = $("#pal-color"), inp = $("#pal-hex");
+  if (!pick || !inp) return;
+  pick.addEventListener("input", () => { ui.palHex = inp.value = pick.value.toUpperCase(); inp.classList.remove("bad"); });
+  inp.addEventListener("input", () => {
+    ui.palHex = inp.value;
+    const h = normHex(inp.value);
+    inp.classList.toggle("bad", !!inp.value.trim() && !h && inp.value.replace(/^#/, "").length >= 6);
+    if (h) pick.value = h.toLowerCase();
+  });
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addHexColor(); } });
 }
 
 function refLabelsView(l) {
@@ -837,7 +878,7 @@ async function onClick(e) {
   if (!b || b.disabled) return;
   const act = b.dataset.act;
   const l = curLayer();
-  if (act !== "menu") closeMenus();
+  if (act !== "menu" && act !== "pal-add-hex") closeMenus();  // a wrong colour code keeps its menu open
   switch (act) {
     case "menu": toggleMenu(b.dataset.menu); break;
     case "connect": doConnect(); break;
@@ -849,6 +890,7 @@ async function onClick(e) {
     case "zoom": zoomCmd(b.dataset.z); break;
     case "lines": toggleLines(); break;
     case "pipette": togglePipette(); break;
+    case "pal-add-hex": addHexColor(); break;
     case "tool": setTool(b.dataset.tool); break;
     case "help": toggleHelp(); break;
     case "dups": {  // from what is shown (a selected repeat unfolds them); folding moves the selection to its original

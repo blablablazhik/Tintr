@@ -418,8 +418,9 @@ class Api:
         return {"ok": True, "state": self._state()}
 
     def add_palette_color(self, uid: str, hex_color: str) -> dict:
-        """Pipette from the reference: a colour the palette missed. It goes to the end of the layer
-        palette (names of the other colours stay) and to Gemini on the next requests."""
+        """A colour the palette missed: from the pipette, typed as a code or chosen in the colour picker.
+        It goes to the end of the layer palette (names of the other colours stay) and to the model on the
+        next requests."""
         if g := self._guard():
             return g
         e = self._entry(uid)

@@ -205,11 +205,21 @@ header .spend { margin-left: 4px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .ref-labels .spin { animation: none; } }
 .ref-name kbd { font: 10px var(--mono); padding: 0 4px; border-radius: 3px; background: var(--raise); color: var(--fg2); }
-.palette { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
-.palette span, .pal-add { height: 20px; border-radius: 4px; }
+.palette { position: relative; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
+.pal-add-wrap { position: static; display: block; }
+.pal-add-wrap .pal-add { width: 100%; }
+.pal-menu { top: calc(100% + 6px); right: 0; left: 0; min-width: 0; }
+.pal-custom { display: flex; align-items: center; gap: 6px; padding: 6px 10px 6px; border-top: 1px solid var(--border); margin-top: 4px; }
+.pal-custom input[type=color] { flex-shrink: 0; width: 30px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: transparent; cursor: pointer; }
+.pal-custom input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+.pal-custom input[type=color]::-webkit-color-swatch { border: 0; border-radius: 4px; }
+.pal-custom input[type=text] { flex: 1; min-width: 0; height: 28px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--field); color: var(--fg); font: 12px var(--mono); text-transform: uppercase; }
+.pal-custom input[type=text].bad { border-color: var(--warn); }
+.pal-custom .btn.sm.primary { color: var(--bg); }
+.palette > span, .pal-add { height: 20px; border-radius: 4px; }
 .pal-add { border: 1px dashed var(--dim); background: transparent; color: var(--fg2); font-size: 13px; line-height: 1; padding: 0; }
 .pal-add:hover:not(:disabled), .pal-add.on { border-color: var(--accent); color: var(--accent); }
-.palette span.extra { outline: 1px dashed var(--fg2); outline-offset: 1px; }
+.palette > span.extra { outline: 1px dashed var(--fg2); outline-offset: 1px; }
 .pal-head { display: flex; align-items: baseline; gap: 8px; }
 .pal-note { margin-left: auto; font-size: 11px; color: var(--ok); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .link.on { color: var(--accent); }
