@@ -7,8 +7,9 @@ const ui = {
   uid: null, idx: null, mode: null, view: "main",
   log: [], logOpen: false, live: {},
   insertSel: null, save: null, port: null, connectError: "",
-  zooms: {},                         // zoom (1 = fit) + pan per view: main, ref, anchor; kept across keys/modes
+  zooms: {},                         // zoom (1 = fit) + pan per view: main, ref, anchor, full; kept across keys/modes
   panned: false,                     // last mouse press was a pan drag, not a click
+  anchorFull: false,                 // anchor opened over the whole window
 };
 
 const REMOTE = !!window.TINTR_REMOTE;
@@ -356,7 +357,7 @@ function zoomTo(name, s, cx, cy) {
 }
 
 function zoomCmd(cmd) {
-  const name = "main";
+  const name = ui.anchorFull ? "full" : "main";
   const el = zoomEl(name);
   if (!el) return;
   closePopover();
@@ -398,9 +399,25 @@ function bindZoomable(name) {
   el.addEventListener("dblclick", () => { if (name !== "main") { ui.zooms[name] = { s: 1, x: 0, y: 0 }; applyZoom(name); } });
 }
 
+// ---------- anchor over the whole window (KeyA toggles, Esc closes)
 function anchorOf(l) { const a = l && l.keys.find((x) => x.idx === l.anchorIdx); return a && a.colored ? a : null; }
 
 function anchorLayers(a) { return `<img src="${a.color}" alt=""><img src="${a.key}" alt="">`; }
+
+function toggleAnchorFull(on = !ui.anchorFull) {
+  const box = $("#anchor-full");
+  const a = anchorOf(curLayer());
+  if (on && !a) on = false;
+  ui.anchorFull = on;
+  box.hidden = !on;
+  if (!on) { box.innerHTML = ""; return; }
+  closePopover();
+  const W = S.project.w, H = S.project.h;
+  const s = Math.min((window.innerWidth - 48) / W, (window.innerHeight - 48) / H);
+  box.innerHTML = `<div class="full-view zoomable paper" data-zoom="full" style="width:${Math.floor(W * s)}px;height:${Math.floor(H * s)}px"><div class="zoom">${anchorLayers(a)}</div></div>`;
+  bindZoomable("full");
+  applyZoom("full");
+}
 
 function groupsView(l) {
   if (!l.keys.some((k) => k.key)) return "";
@@ -565,6 +582,7 @@ function bindMain() {
   for (const el of document.querySelectorAll("#app [data-zoom]")) bindZoomable(el.dataset.zoom);
   fitFrames();
   applyAllZooms();
+  if (ui.anchorFull) toggleAnchorFull(true);
   for (const inp of document.querySelectorAll('[data-act="isel"]')) inp.addEventListener("change", () => {
     if (inp.checked) ui.insertSel.add(inp.dataset.uid); else ui.insertSel.delete(inp.dataset.uid);
     render();
@@ -648,12 +666,13 @@ document.addEventListener("mousedown", (e) => {
   if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame")) closePopover();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closePopover(); closeModal(); return; }
+  if (e.key === "Escape") { closePopover(); closeModal(); if (ui.anchorFull) toggleAnchorFull(false); return; }
   if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
   if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "+" || e.key === "=") zoomCmd("in");
   else if (e.key === "-") zoomCmd("out");
   else if (e.key === "0") zoomCmd("fit");
+  else if (e.code === "KeyA") toggleAnchorFull();  // any keyboard layout
 });
 
 // ---------- log drawer

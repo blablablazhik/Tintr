@@ -149,6 +149,8 @@ header { height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 
 .zoomable.panning { cursor: grabbing; }
 .anchor-view { width: 100%; border-radius: 8px; outline: 1px solid var(--accent); flex-shrink: 0; }
 .paper { background: var(--paper); }
+#anchor-full { position: fixed; inset: 0; z-index: 35; background: rgba(1, 8, 13, .88); display: flex; align-items: center; justify-content: center; }
+#anchor-full .full-view { border-radius: 6px; outline: 2px solid var(--accent); }
 .ref.none { background: var(--line); color: var(--muted); flex-direction: column; gap: 12px; }
 .ref-name { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .palette { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
