@@ -234,21 +234,83 @@ def view(base: Image.Image, box: tuple[int, int, int, int] | None = None,
     return im.resize((max(1, round(W * s)), max(1, round(H * s))), Image.LANCZOS), s, x0, y0
 
 
-def _overlaps(b, placed, gap: int = 2) -> bool:
+def _overlaps(b, placed, gap: float = 2) -> bool:
     return any(b[0] < p[2] + gap and b[2] + gap > p[0] and b[1] < p[3] + gap and b[3] + gap > p[1] for p in placed)
+
+
+def _ccw(a, b, c) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _seg_cross(p1, p2, q1, q2) -> bool:
+    """Segments p1-p2 and q1-q2 cross (touching at a shared end does not count)."""
+    d1, d2, d3, d4 = _ccw(q1, q2, p1), _ccw(q1, q2, p2), _ccw(p1, p2, q1), _ccw(p1, p2, q2)
+    return (d1 * d2 < 0) and (d3 * d4 < 0)
+
+
+def _seg_hits_box(p1, p2, b, gap: float = 0) -> bool:
+    """Segment p1-p2 passes through rectangle b (x0, y0, x1, y1) grown by `gap`."""
+    x0, y0, x1, y1 = b[0] - gap, b[1] - gap, b[2] + gap, b[3] + gap
+    inside = lambda p: x0 <= p[0] <= x1 and y0 <= p[1] <= y1  # noqa: E731
+    if inside(p1) or inside(p2):
+        return True
+    c = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+    return any(_seg_cross(p1, p2, c[k], c[(k + 1) % 4]) for k in range(4))
+
+
+def mark_colors(n: int) -> np.ndarray:
+    """Distinct identification colours for regions 1..n (index 0 unused): golden-ratio hues."""
+    out = np.zeros((n + 1, 3), np.uint8)
+    for i in range(1, n + 1):
+        h = (i * 0.61803398875) % 1.0
+        s, v = (0.75, 0.95) if i % 2 else (0.55, 0.85)
+        k = np.array([5, 3, 1]) + h * 6
+        rgb = v - v * s * np.clip(np.minimum(k % 6, 4 - k % 6), 0, 1)
+        out[i] = (rgb * 255).round()
+    return out
+
+
+def _tint(base: Image.Image, regions: Regions, cols: np.ndarray, alpha: float = 0.38) -> Image.Image:
+    """Tint every region except the outer background with its identification colour (Set-of-Mark)."""
+    reg = regions.reg
+    edge = np.concatenate([reg[0], reg[-1], reg[:, 0], reg[:, -1]])
+    lut = np.ones(regions.n + 1, bool)
+    lut[0] = False
+    lut[np.unique(edge[edge > 0])] = False  # regions touching the frame edge = background: keep plain
+    m = lut[reg]
+    a = np.array(base, np.float32)
+    a[m] = a[m] * (1 - alpha) + cols[reg[m]].astype(np.float32) * alpha
+    return Image.fromarray(a.round().astype(np.uint8), "RGB")
 
 
 def annotate(base: Image.Image, regions: Regions, width: int = VLM_W,
              box: tuple[int, int, int, int] | None = None, ui: float = 1.0) -> Image.Image:
-    """Draw region numbers (yellow boxes) on `base` (full-res RGB), cropped to `box` and scaled (see view()).
-    A number that doesn't fit inside its region, or would cover another one, is moved aside and
-    pointed at its region with a leader line and a dot. `ui` scales labels (a bigger image that should
-    look the same when fitted on screen, e.g. the zoomable preview)."""
-    im, s, ox, oy = view(base, box, width)
+    """Set-of-Mark view of `base` (full-res RGB) cropped to `box` and scaled (see view()): every region is
+    tinted with its own identification colour and numbered in a box of the same colour. A number that
+    doesn't fit inside its region is moved aside with a leader line + dot of that colour; leaders never
+    cross each other or other numbers. `ui` scales labels (a bigger image that should look the same when
+    fitted on screen, e.g. the zoomable preview)."""
+    cols = mark_colors(regions.n)
+    im, s, ox, oy = view(_tint(base, regions, cols), box, width)
     W, H = im.size
     d = ImageDraw.Draw(im)
-    placed: list[tuple] = []  # label boxes and dots already on the image
-    labels = []  # (i, font, centre, anchor point or None)
+    boxes: list[tuple] = []  # label boxes and leader dots already placed
+    segs: list[tuple] = []  # leader segments already placed
+    labels = []  # (i, font, centre, box, anchor point or None)
+    gap = 2 * ui
+
+    def free(b, seg, strict: bool) -> bool:
+        if b[0] < 0 or b[1] < 0 or b[2] > W or b[3] > H or _overlaps(b, boxes, gap):
+            return False
+        if not strict:
+            return True
+        if any(_seg_hits_box(q1, q2, b, gap) for q1, q2 in segs):
+            return False
+        if seg and (any(_seg_cross(seg[0], seg[1], q1, q2) for q1, q2 in segs)
+                    or any(_seg_hits_box(seg[0], seg[1], o, 0) for o in boxes)):
+            return False
+        return True
+
     # small regions first: they have the fewest good spots
     for i, (x, y, r) in sorted(regions.points.items(), key=lambda t: t[1][2]):
         f = _font(int(max(14 * ui, min(34 * ui, r * s * 0.9))))
@@ -256,37 +318,49 @@ def annotate(base: Image.Image, regions: Regions, width: int = VLM_W,
         bb = d.textbbox((0, 0), str(i), font=f, anchor="mm")
         hw, hh = (bb[2] - bb[0]) / 2 + 3 * ui, (bb[3] - bb[1]) / 2 + 2 * ui
         fits = rs >= 0.8 * max(hw, hh)
+        dot = (px - 4 * ui, py - 4 * ui, px + 4 * ui, py + 4 * ui)
         spot = None
-        start = 0.0 if fits else rs + max(hw, hh) + 4 * ui
-        for k in range(40):
-            dist = start + k * 6 * ui
-            angles = [0.0] if dist == 0 else [a * np.pi / 6 for a in range(12)]
-            for a in angles:
-                cx, cy = px + dist * np.cos(a), py - dist * np.sin(a)
-                b = (cx - hw, cy - hh, cx + hw, cy + hh)
-                if b[0] < 0 or b[1] < 0 or b[2] > W or b[3] > H or _overlaps(b, placed, round(2 * ui)):
-                    continue
-                spot = (cx, cy, b)
-                break
+        for strict in (True, False):  # relaxed pass only if no crossing-free spot exists nearby
+            start = 0.0 if fits else rs + max(hw, hh) + 4 * ui
+            for k in range(48):
+                dist = start + k * 6 * ui
+                for a in ([0.0] if dist == 0 else [j * np.pi / 8 for j in range(16)]):
+                    cx, cy = px + dist * np.cos(a), py - dist * np.sin(a)
+                    b = (cx - hw, cy - hh, cx + hw, cy + hh)
+                    leader = np.hypot(cx - px, cy - py) > max(rs, 4 * ui)
+                    # the leader runs from the dot to the nearest point of the box edge
+                    ex, ey = min(max(px, b[0]), b[2]), min(max(py, b[1]), b[3])
+                    seg = ((px, py), (ex, ey)) if leader else None
+                    if leader and (_overlaps(dot, boxes, 0) and strict):
+                        continue
+                    if free(b, seg, strict):
+                        spot = (cx, cy, b, seg)
+                        break
+                if spot:
+                    break
             if spot:
                 break
         if spot is None:  # crowded everywhere: put it on the region anyway
-            spot = (px, py, (px - hw, py - hh, px + hw, py + hh))
-        cx, cy, b = spot
-        leader = np.hypot(cx - px, cy - py) > max(rs, 4 * ui)
-        placed.append(b)
-        if leader:
-            placed.append((px - 4 * ui, py - 4 * ui, px + 4 * ui, py + 4 * ui))
-        labels.append((i, f, (cx, cy), b, (px, py) if leader else None))
-    for _, _, (cx, cy), _, pt in labels:
-        if pt:
-            d.line((pt, (cx, cy)), fill=(0, 0, 0), width=round(3 * ui))
-            d.line((pt, (cx, cy)), fill=(255, 235, 0), width=max(1, round(ui)))
-            rd = 3 * ui
-            d.ellipse((pt[0] - rd, pt[1] - rd, pt[0] + rd, pt[1] + rd), fill=(255, 235, 0), outline=(0, 0, 0), width=max(1, round(ui)))
+            spot = (px, py, (px - hw, py - hh, px + hw, py + hh), None)
+        cx, cy, b, seg = spot
+        boxes.append(b)
+        if seg:
+            boxes.append(dot)
+            segs.append(seg)
+        labels.append((i, f, (cx, cy), b, seg))
+    lw = max(1, round(ui))
+    for i, _, _, _, seg in labels:
+        if seg:
+            c = tuple(int(v) for v in cols[i])
+            d.line(seg, fill=(0, 0, 0), width=round(4 * ui))
+            d.line(seg, fill=c, width=max(2, round(2 * ui)))
+            (qx, qy), rd = seg[0], 4 * ui
+            d.ellipse((qx - rd, qy - rd, qx + rd, qy + rd), fill=c, outline=(0, 0, 0), width=lw)
     for i, f, (cx, cy), b, _ in labels:
-        d.rectangle(b, fill=(255, 235, 0), outline=(0, 0, 0), width=max(1, round(ui)))
-        d.text((cx, cy), str(i), font=f, fill=(0, 0, 0), anchor="mm")
+        c = cols[i].astype(float)
+        ink = (0, 0, 0) if c @ (0.299, 0.587, 0.114) > 140 else (255, 255, 255)  # readable on the box colour
+        d.rectangle(b, fill=tuple(int(v) for v in c), outline=(0, 0, 0), width=lw)
+        d.text((cx, cy), str(i), font=f, fill=ink, anchor="mm")
     return im
 
 
@@ -332,7 +406,13 @@ def fill(regions: Regions, mapping: dict, pal: np.ndarray) -> Image.Image:
 
 
 # ------------------------------------------------------------------ prompts
-_RULES = """Use "BG" for regions that are empty background outside the character (they stay transparent).
+_MARKS = """MARKS: each region is tinted with its own identification colour and has a number in a box of that
+same colour. A number placed outside its (small) region is joined to it by a line of that colour ending
+in a dot INSIDE the region; follow the line to the dot. The tints are ONLY for telling regions apart,
+they are NOT the colours of the character: take the real colours from the reference and the palette.
+"""
+
+_RULES = _MARKS + """Use "BG" for regions that are empty background outside the character (they stay transparent).
 Small details not in the palette (mouth interior, eye details): pick the closest sensible palette colour.
 Answer with ONLY a JSON object, no markdown, exactly in this form:
 {"regions": {"1": {"part": "<short name>", "color": "C3"}, "2": {"part": "background", "color": "BG"}, ...}}
@@ -341,7 +421,7 @@ Include every number from 1 to %d."""
 PROMPT_ANCHOR = """You are a professional animation ink-and-paint artist doing paint-bucket colouring.
 
 Image 1: the line-art frame to colour (clean).
-Image 2: the SAME frame with every paintable region labelled by a number in a yellow box.
+Image 2: the SAME frame with every paintable region marked (see MARKS below).
 Image 3: the character colour reference (colour model sheet).
 Image 4: the allowed colour palette; each swatch is labelled C1, C2, ...
 
@@ -353,10 +433,10 @@ PROMPT_FOLLOW = """You are a professional animation ink-and-paint artist doing p
 An earlier key frame of the SAME character in the SAME shot was coloured and APPROVED by the art director.
 Colour the new key frame so every part gets exactly the same colour as in the approved frame.
 
-Image 1: APPROVED frame with its numbered regions.
+Image 1: APPROVED frame with its regions marked (see MARKS below).
 Image 2: APPROVED frame as coloured (the ground truth for colours).
 Image 3: NEW frame to colour (clean line-art).
-Image 4: NEW frame with every paintable region labelled by a number in a yellow box.
+Image 4: NEW frame with every paintable region marked (see MARKS below).
 Image 5: the character colour reference (colour model sheet).
 Image 6: the allowed colour palette; each swatch is labelled C1, C2, ...
 
