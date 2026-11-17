@@ -891,6 +891,19 @@ const TOOLS = [["select", "Вибір", "V", "клік по області — �
   ["eraser", "Гумка", "E", "стирає до прозорого"], ["bucket", "Заливка", "G", "залити область поточним кольором"],
   ["picker", "Піпетка", "I", "взяти колір з кадру"]];
 const editors = {};  // "uid:masterIdx" → editor (kept across renders: the canvas node is moved into the new DOM)
+// edit history per key, kept apart from the editor: a region colour change reloads the editor, the history stays.
+// Entries: strokes {box, bp, be, ap, ae} (paint/erase before/after in a box) and region colours
+// {region, from, to, bucket, strokes} (the bucket also cleared strokes in that region: a box of them before/after).
+const history = {};
+const hist = (id) => history[id] || (history[id] = { undo: [], redo: [] });
+const keyId = (l, k) => `${l.uid}:${master(l, k).idx}`;
+
+function pushHistory(id, step) {
+  const h = hist(id);
+  h.undo.push(step);
+  if (h.undo.length > 50) h.undo.shift();
+  h.redo = [];
+}
 const drawing = () => ui.mode === "color" && (ui.tool === "brush" || ui.tool === "eraser") && !ui.showAnchor && !ui.showRef;
 
 function toolColor(l) {
@@ -993,8 +1006,8 @@ function newEditor(id, uid, m, urls) {
   const W = S.project.w, H = S.project.h;
   const cv = document.createElement("canvas");
   cv.width = W; cv.height = H; cv.className = "edit-canvas";
-  const ed = { id, uid, idx: m.idx, W, H, cv, ctx: cv.getContext("2d"), urls, ready: false, dirty: false, saving: null, undo: [], redo: [] };
-  Promise.all([m.fill, m.paint, m.erase].map((u) => loadPixels(u, W, H))).then(([f, p, e]) => {
+  const ed = { id, uid, idx: m.idx, W, H, cv, ctx: cv.getContext("2d"), urls, ready: false, dirty: false, saving: null };
+  ed.loaded = Promise.all([m.fill, m.paint, m.erase].map((u) => loadPixels(u, W, H))).then(([f, p, e]) => {
     if (!f) return;
     ed.fill = f;
     ed.paint = p || new Uint8ClampedArray(W * H * 4);
@@ -1084,27 +1097,78 @@ function onDrawStart(e) {
     window.removeEventListener("mousemove", move);
     window.removeEventListener("mouseup", up);
     if (!st.box) return;
-    ed.undo.push({ box: st.box, bp: rect(st.p0, ed.W, st.box), be: rect(st.e0, ed.W, st.box), ap: rect(ed.paint, ed.W, st.box), ae: rect(ed.erase, ed.W, st.box) });
-    if (ed.undo.length > 50) ed.undo.shift();
-    ed.redo = [];
+    pushHistory(ed.id, { box: st.box, bp: rect(st.p0, ed.W, st.box), be: rect(st.e0, ed.W, st.box), ap: rect(ed.paint, ed.W, st.box), ae: rect(ed.erase, ed.W, st.box) });
     scheduleSave(ed);
   };
   window.addEventListener("mousemove", move);
   window.addEventListener("mouseup", up);
 }
 
-function undoRedo(redo) {
-  const l = curLayer(), k = curKey();
-  const ed = l && k && ui.mode === "color" && !ui.showAnchor && !ui.showRef ? editors[`${l.uid}:${master(l, k).idx}`] : null;
-  if (!ed || !ed.ready || S.busy) return;
-  const step = (redo ? ed.redo : ed.undo).pop();
-  if (!step) return;
-  (redo ? ed.undo : ed.redo).push(step);
-  putRect(ed.paint, ed.W, step.box, redo ? step.ap : step.bp);
-  putRect(ed.erase, ed.W, step.box, redo ? step.ae : step.be);
-  const [x0, y0, x1, y1] = step.box;
+function applyStrokes(ed, s, after) {
+  putRect(ed.paint, ed.W, s.box, after ? s.ap : s.bp);
+  putRect(ed.erase, ed.W, s.box, after ? s.ae : s.be);
+  const [x0, y0, x1, y1] = s.box;
   composite(ed, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
   scheduleSave(ed);
+}
+
+async function undoRedo(redo) {
+  const l = curLayer(), k = curKey();
+  if (!l || !k || ui.view !== "main" || ui.showAnchor || ui.showRef || S.busy || ui.undoing) return;
+  const id = keyId(l, k), h = hist(id);
+  const step = (redo ? h.redo : h.undo)[(redo ? h.redo : h.undo).length - 1];
+  if (!step) return;
+  ui.undoing = true;
+  try {
+    if (step.region == null) {  // strokes: only where the colour layer is shown
+      const ed = ui.mode === "color" ? editors[id] : null;
+      if (!ed || !ed.ready) return;
+      applyStrokes(ed, step, redo);
+    } else {  // a region colour (V or the bucket): back on the server, the bucket's strokes back here
+      closePopover();
+      await flushPaint();
+      const r = redo && step.bucket ? await call("fill_region", l.uid, step.idx, step.region, step.to)
+        : await call("set_region_color", l.uid, step.idx, step.region, redo ? step.to : step.from);
+      if (r.ok === false || !r.state) return;
+      if (step.bucket && step.strokes && !redo) {
+        const ed = editors[id];
+        if (ed) { await ed.loaded; if (ed.ready) applyStrokes(ed, step.strokes, false); }
+      }
+    }
+    (redo ? h.redo : h.undo).pop();
+    (redo ? h.undo : h.redo).push(step);
+  } finally {
+    ui.undoing = false;
+  }
+}
+
+function changedBox(a, b, W) {
+  // the box where two RGBA layers differ (alpha decides), or null
+  let x0 = Infinity, y0 = Infinity, x1 = -1, y1 = -1;
+  for (let i = 3; i < a.length; i += 4) {
+    if ((a[i] >= 128) === (b[i] >= 128) && (a[i] < 128 || (a[i - 3] === b[i - 3] && a[i - 2] === b[i - 2] && a[i - 1] === b[i - 1]))) continue;
+    const p = (i - 3) / 4, x = p % W, y = (p - x) / W;
+    if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+  }
+  return x1 < 0 ? null : [x0, y0, x1, y1];
+}
+
+async function bucketFill(l, k, res, color) {
+  // the server clears strokes inside the region: remember them (a box) so Ctrl+Z brings them back
+  const id = keyId(l, k), before = editors[id] && editors[id].ready ? editors[id] : null;
+  const r = await call("fill_region", l.uid, k.idx, res.region, color);
+  if (r.ok === false || !r.state) return;
+  const step = { region: res.region, idx: k.idx, from: res.color || "BG", to: color, bucket: true, strokes: null };
+  const after = editors[id];
+  if (before && after && after !== before) {
+    await after.loaded;
+    if (after.ready) {
+      const bp = changedBox(before.paint, after.paint, before.W), be = changedBox(before.erase, after.erase, before.W);
+      const box = bp && be ? [Math.min(bp[0], be[0]), Math.min(bp[1], be[1]), Math.max(bp[2], be[2]), Math.max(bp[3], be[3])] : bp || be;
+      if (box) step.strokes = { box, bp: rect(before.paint, before.W, box), be: rect(before.erase, before.W, box), ap: rect(after.paint, after.W, box), ae: rect(after.erase, after.W, box) };
+    }
+  }
+  pushHistory(id, step);
 }
 
 function scheduleSave(ed) {
@@ -1230,7 +1294,7 @@ async function onFrameClick(e) {
   await flushPaint();  // region edits redraw the fill: send pending strokes first
   if (tool === "bucket") {
     const res = await api().region_at(l.uid, k.idx, x, y);
-    if (res && res.ok && res.editable) await call("fill_region", l.uid, k.idx, res.region, toolColor(l).name);
+    if (res && res.ok && res.editable) await bucketFill(l, k, res, toolColor(l).name);
     return;
   }
   const res = await api().region_at(l.uid, k.idx, x, y);
@@ -1248,7 +1312,10 @@ async function onFrameClick(e) {
     const c = ev.target.closest("[data-c]");
     if (!c) return;
     closePopover();
-    await call("set_region_color", l.uid, k.idx, res.region, c.dataset.c);
+    const to = c.dataset.c, from = cur || "BG";
+    if (to === from) return;
+    const r = await call("set_region_color", l.uid, k.idx, res.region, to);
+    if (r.ok !== false && r.state) pushHistory(keyId(l, k), { region: res.region, idx: k.idx, from, to, bucket: false });
   };
 }
 function closePopover() { $("#popover").hidden = true; }
@@ -1258,7 +1325,7 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closeMenus(); closePopover(); closeModal(); toggleAnchor(false); toggleRef(false); togglePipette(false); if (ui.help) toggleHelp(false); return; }
   if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
-  if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") { e.preventDefault(); undoRedo(e.shiftKey); return; }
+  if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") { e.preventDefault(); undoRedo(e.shiftKey); return; }  // strokes and region colours
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyY") { e.preventDefault(); undoRedo(true); return; }
   if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.code === "Space") { e.preventDefault(); if (!ui.space) { ui.space = true; $("#frame")?.classList.add("space-pan"); updateCursor(); } return; }
