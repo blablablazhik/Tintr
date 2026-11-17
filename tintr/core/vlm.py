@@ -497,6 +497,19 @@ in a dot INSIDE the region; follow the line to the dot. The tints are ONLY for t
 they are NOT the colours of the character: take the real colours from the reference and the palette.
 """
 
+# colourist's rules for the anchor (where the model decides every part alone)
+_CRAFT = """
+Ink-and-paint rules (read the frame like a colourist):
+- One part is often split into several regions by lines (an ear, a glasses rim, a sleeve, a collar): every
+  piece gets the colour of that part.
+- A part covered by an arm, a hand or hair continues on the other side: a piece of the tie seen below or
+  beside an arm is still the tie, not the shirt.
+- An open mouth usually has upper/lower teeth (white), a tongue and a dark mouth cavity; check which
+  number sits in which of them.
+- Before answering, go through the small regions one by one: where exactly is the dot/number, what
+  surrounds it, and which part of the character is it.
+"""
+
 _RULES = _MARKS + """Use "BG" for regions that are empty background outside the character (they stay transparent).
 Small details not in the palette (mouth interior, eye details): pick the closest sensible palette colour.
 Answer with ONLY a JSON object, no markdown, exactly in this form:
@@ -512,7 +525,7 @@ Image 4: the allowed colour palette; each swatch is labelled C1, C2, ...
 
 For EVERY numbered region in Image 2 decide which part of the character it is (skin, hair, hoodie,
 inner shirt, background, ...) and assign exactly one palette colour that this part has in Image 3.
-""" + _RULES
+""" + _CRAFT + _RULES
 
 PROMPT_FOLLOW = """You are a professional animation ink-and-paint artist doing paint-bucket colouring of an animation.
 An earlier key frame of the SAME character in the SAME shot was coloured and APPROVED by the art director.
