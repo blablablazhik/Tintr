@@ -120,15 +120,20 @@ header { height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 
 .group { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
 .group-head { display: flex; align-items: baseline; gap: 8px; white-space: nowrap; }
 .group-head .hint { font-size: 11px; color: var(--faint); }
-.group-keys { display: flex; gap: 8px; }
+.group-keys { display: flex; gap: 12px; padding: 8px 8px 0; }
 .group.anchor-group { border: 1px solid var(--accent); border-radius: 10px; padding: 6px 10px 8px; margin: -7px 0 0 -11px; background: var(--accent-soft); }
 .kf { width: 132px; display: flex; flex-direction: column; gap: 6px; padding: 0; border: 0; background: transparent; text-align: left; }
 .kf .thumb { position: relative; height: 74px; border-radius: 6px; background: #FFFFFF; overflow: hidden; outline-offset: 2px; }
 .kf .thumb.paper { background: var(--paper); }
 .kf .thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-.kf.sel .thumb { outline: 2px solid var(--fg); }
 .kf.anchor .thumb { outline: 2px solid var(--accent); }
+/* selected key: thick bright ring + glow; on the anchor a second ring outside the yellow one */
+.kf.sel .thumb { outline: 3px solid var(--fg); outline-offset: 2px; box-shadow: 0 0 0 7px rgba(255, 250, 240, .18), 0 0 14px 4px rgba(255, 250, 240, .25); }
+.kf.anchor.sel .thumb { outline: 3px solid var(--accent); outline-offset: 0; box-shadow: 0 0 0 3px var(--bg), 0 0 0 6px var(--fg), 0 0 14px 6px rgba(255, 250, 240, .25); }
+.kf.sel .meta b { color: var(--fg); font-weight: 700; }
+.kf.sel .meta span { color: var(--fg2); }
 .kf.dup { opacity: .5; }
+.kf.dup.sel { opacity: 1; }
 .kf:hover .thumb { filter: brightness(1.05); }
 .kf .meta { display: flex; gap: 6px; font-size: 11px; }
 .kf .meta b { font-weight: 500; }
