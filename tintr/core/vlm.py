@@ -806,16 +806,21 @@ class VLMColorizer:
         return out
 
     def label_reference(self, ref_path: Path, pal: np.ndarray, label: str = "", status=None) -> tuple[list, float]:
-        """Names, colours and points of the reference's parts (see reflabel); points snapped to the colours."""
+        """Names of the reference's parts: code numbers its colour patches, the model names them (see reflabel)."""
         from . import reflabel as RL
         rgb, mask = RL.load_rgb(ref_path)
         box = RL.character_box(mask)
-        urls = self._upload_all([(RL.grid_image(rgb, box), "ref_grid.jpg"), self._ref_items(ref_path, pal)[1]], label)
-        data, cost, raw = self._ask(RL.PROMPT, urls, label, status)
-        parts = data.get("parts") if isinstance(data, dict) else None
-        labels = RL.snap(rgb, mask, box, pal, parts) if isinstance(parts, list) else []
+        regs, colour = RL.patches(rgb, mask, pal)
+        if not regs.n:
+            raise ValueError("На референсі не знайдено плям кольорів палітри.")
+        base = Image.fromarray(rgb)
+        items = [(view(base, box, margin=LABEL_MARGIN)[0], "ref_clean.jpg"),
+                 (annotate(base, regs, box=box, margin=LABEL_MARGIN), "ref_patches.jpg")]
+        urls = self._upload_all(items, label)
+        names, cost, _ = self._ask(RL.PROMPT % regs.n, urls, label, status)
+        labels = RL.labels_from(regs, colour, mask, names)
         if not labels:
-            raise ValueError(f"VLM returned no parts: {raw[:300]!r}")
+            raise ValueError("Модель не назвала жодної частини референсу.")
         return labels, cost
 
     def color_anchor(self, key_rgba, regions: Regions, ref_path: Path, pal: np.ndarray, label: str = "",

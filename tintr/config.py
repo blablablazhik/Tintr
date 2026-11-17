@@ -30,6 +30,7 @@ class Config:
     vlm_model: str = "anthropic/claude-opus-5.5"  # best in the anchor test (with details 40.7/42, ~$0.09, ~30 s)
     vlm_est_cost: float = 0.09  # rough $ per anchor for the estimate; real cost comes from fal usage
     vlm_reasoning: bool = True  # anchor reasoning; models that require it get it anyway
+    vlm_est_cost_label: float = 0.03  # rough $ for labelling the parts of a reference (anchor model, 2 images)
     # keys that follow the approved anchor: a fast model is as accurate here (bench: 100% vs 100%)
     vlm_model_follow: str = "anthropic/claude-haiku-5.5"
     vlm_est_cost_follow: float = 0.002  # rough $ per followed key
