@@ -40,6 +40,14 @@ const ICON = {
   settings: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>',
   folder: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>',
   alert: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;margin-top:2px" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h0"/></svg>',
+  select: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M6 3l12 9-5.5 1.2L15 20l-2.6 1.1-2.6-6.6L6 18z"/></svg>',
+  brush: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M4 20l1.2-4.4L16.5 4.3a2.1 2.1 0 0 1 3 3L8.4 18.8z"/><path d="M14.5 6.3l3 3"/></svg>',
+  eraser: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M8.5 20L3.8 15.3a1.5 1.5 0 0 1 0-2.1L13 4a1.5 1.5 0 0 1 2.1 0l4.9 4.9a1.5 1.5 0 0 1 0 2.1L11 20z"/><path d="M8.5 20H20M8 9.2l6.8 6.8"/></svg>',
+  bucket: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M4.5 11.5L11 5l7 7-6.5 6.5a1.5 1.5 0 0 1-2.1 0l-4.9-4.9a1.5 1.5 0 0 1 0-2.1z"/><path d="M4.5 12h13M8 3.5L10.5 6"/><path d="M20 15.5s1.5 2 1.5 3a1.5 1.5 0 0 1-3 0c0-1 1.5-3 1.5-3z"/></svg>',
+  picker: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M13.5 6.5l4 4M15.5 4.5a2.1 2.1 0 0 1 3 0l1 1a2.1 2.1 0 0 1 0 3L17.5 10.5l-4-4z"/><path d="M14.5 9.5L6 18l-2.5.5L4 16l8.5-8.5"/></svg>',
+  eye: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+  undo: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
+  redo: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>',
   more: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
   arrow: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3E5266" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
 };
@@ -163,11 +171,11 @@ function header(connected) {
 }
 
 // ---------- dropdown menus: a trigger with data-act="menu" and a hidden list of actions under it
-function menu(id, trigger, label, items, cls = "btn sm") {
+function menu(id, trigger, label, items, cls = "btn sm", menuCls = "") {
   const rows = items.map((i) => `<button role="menuitem" data-act="${i.act}" ${i.dis ? "disabled" : ""} ${i.attrs || ""}>
     <span>${i.label}</span>${i.hint ? `<small>${esc(i.hint)}</small>` : ""}</button>`).join("");
   return `<div class="menu-wrap"><button class="${cls}" data-act="menu" data-menu="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="${esc(label)}" title="${esc(label)}">${trigger}</button>
-    <div class="menu" id="${id}" role="menu" hidden>${rows}</div></div>`;
+    <div class="menu ${menuCls}" id="${id}" role="menu" hidden>${rows}</div></div>`;
 }
 
 function toggleMenu(id) {
@@ -312,7 +320,7 @@ function centerView() {
   return `<main class="center">
     <div class="toolbar"><b>${esc(l.name)}</b><span class="info">${info}</span>${state}<div class="grow"></div>
       <div class="modes" role="group" aria-label="Що показати">${modeBtns}</div>${more}</div>
-    <div class="stage" id="stage">${stageView(l, k)}${helpView()}</div>
+    <div class="stage" id="stage">${stageView(l, k)}</div>
     ${groupsView(l)}
   </main>`;
 }
@@ -324,17 +332,14 @@ function stageView(l, k) {
   }
   if (ui.showRef && l.refUrl) {  // the reference at full size; the pipette works here too
     return `<div class="ref-stage zoomable ref-pick ${ui.pipette ? "picking" : ""}" data-zoom="refmain"><div class="zoom">
-      <img src="${l.refUrl.replace(/&w=\d+/, "")}" alt="Референс ${esc(l.name)}"></div></div>` + zoomBar("ref") + `<span class="anchor-tag">Референс · ${esc(l.ref)}</span>`;
+      <img src="${l.refUrl.replace(/&w=\d+/, "")}" alt="Референс ${esc(l.name)}"></div></div>` + dockView("ref", null) + `<span class="anchor-tag">Референс · ${esc(l.ref)}</span>`;
   }
   const a = ui.showAnchor ? anchorOf(l) : null;
   if (a) {  // quick check against the anchor: same view, same zoom; regions are not editable here
     const mode = modesFor(a).includes(ui.mode) ? ui.mode : "color";
-    return frameHtml(a, mode, true, "", false) + zoomBar(mode) + `<span class="anchor-tag">Якір · ключ #${a.idx}</span>`;
+    return frameHtml(a, mode, true, "", false) + dockView(mode, null) + `<span class="anchor-tag">Якір · ключ #${a.idx}</span>`;
   }
-  const big = frameHtml(k, ui.mode, true) + zoomBar(ui.mode) + (ui.mode === "color" && master(l, k).colored ? toolsView(l) : "");
-  const hint = ui.mode === "regions" ? "Це бачить Gemini. Клік по області — змінити колір."
-    : ui.mode === "color" ? toolHint() : "";
-  return big + (hint && master(l, k).colored ? `<span class="stage-hint" id="stage-hint">${hint}</span>` : ui.mode === "regions" ? `<span class="stage-hint">Області, які бачить Gemini.</span>` : "");
+  return frameHtml(k, ui.mode, true) + dockView(ui.mode, ui.mode === "color" && master(l, k).colored ? l : null);
 }
 
 function frameHtml(k, mode, main, extra = "", editable = true) {
@@ -355,29 +360,38 @@ function fitFrames() {
   // largest size that keeps the frame's aspect ratio inside the stage (or its figure column)
   const stage = $("#stage");
   if (!stage) return;
-  const sr = stage.getBoundingClientRect();
+  const cs = getComputedStyle(stage);
+  const innerW = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const innerH = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
   for (const f of stage.querySelectorAll(".frame")) {
     const inFig = f.parentElement !== stage;
     const W = +f.dataset.w, H = +f.dataset.h;
-    const maxW = inFig ? f.parentElement.getBoundingClientRect().width : sr.width - 40;
-    const maxH = sr.height - 40 - (inFig ? 28 : 0);
+    const maxW = inFig ? f.parentElement.getBoundingClientRect().width : innerW;
+    const maxH = innerH - (inFig ? 28 : 0);
     const s = Math.min(maxW / W, maxH / H);
     f.style.width = `${Math.max(40, Math.floor(W * s))}px`;
   }
   applyAllZooms();
 }
 
-// ---------- zoom / pan of the main preview (line, regions, colour)
-function zoomBar(mode) {
-  const lines = mode === "color" ? `<button class="btn sm ${ui.hideLines ? "" : "on"}" data-act="lines" id="lines-btn" aria-pressed="${!ui.hideLines}"
-    title="Показати / сховати лайн на розфарбованих кадрах (L)">Лайн</button>` : "";
-  return `<div class="zoombar" role="group" aria-label="Масштаб">${lines}
-    <button class="icon-btn" data-act="zoom" data-z="out" title="Зменшити (−)" aria-label="Зменшити">−</button>
-    <span id="zoom-pct">${Math.round(zstate(stageZoom()).s * 100)}%</span>
-    <button class="icon-btn" data-act="zoom" data-z="in" title="Збільшити (+)" aria-label="Збільшити">+</button>
-    ${mode === "ref" ? "" : '<button class="btn sm" data-act="zoom" data-z="px" title="Піксель у піксель">1:1</button>'}
-    <button class="btn sm" data-act="zoom" data-z="fit" title="Вписати (F або 0)">Вписати</button></div>`;
+// ---------- the dock: one floating panel under the frame (drawing tools, lines, zoom, shortcuts)
+function dockView(mode, editable) {
+  // editable: the layer whose coloured key the tools draw on (colour mode), or null
+  const parts = [];
+  if (editable) parts.push(toolsView(editable));
+  if (mode === "color") parts.push(`<button class="dbtn ${ui.hideLines ? "" : "on"}" data-act="lines" id="lines-btn" aria-pressed="${!ui.hideLines}"
+    title="Лайн поверх кольору (L)" aria-label="Лайн поверх кольору">${ICON.eye}</button>`);
+  const pct = `<span id="zoom-pct">${Math.round(zstate(stageZoom()).s * 100)}%</span>`;
+  const zoomItems = [{ act: "zoom", label: "Вписати", hint: "F або 0", attrs: 'data-z="fit"' }];
+  if (mode !== "ref") zoomItems.push({ act: "zoom", label: "1:1", hint: "піксель кадру = піксель екрана", attrs: 'data-z="px"' });
+  parts.push(`<div class="dgroup"><button class="dbtn" data-act="zoom" data-z="out" title="Зменшити (−)" aria-label="Зменшити">−</button>
+    ${menu("m-zoom", pct, "Масштаб", zoomItems, "dpct", "up")}
+    <button class="dbtn" data-act="zoom" data-z="in" title="Збільшити (+)" aria-label="Збільшити">+</button></div>`);
+  parts.push(`<button class="dbtn help-btn ${ui.help ? "on" : ""}" data-act="help" title="Гарячі клавіші (H)" aria-label="Гарячі клавіші" aria-expanded="${ui.help}">?</button>`);
+  return `<div class="dock" role="toolbar" aria-label="Інструменти і масштаб">${parts.join('<span class="dsep"></span>')}</div>${helpView()}`;
 }
+
+// ---------- zoom / pan of the main preview (line, regions, colour)
 
 // every zoomable view: an element with data-zoom="<name>" holding a .zoom layer that is scaled and moved
 const zoomEl = (name) => document.querySelector(`[data-zoom="${name}"]`);
@@ -835,48 +849,41 @@ function toolColor(l) {
 }
 
 function toolsView(l) {
+  // the dock's drawing group; minimized it keeps only the active tool and the colour (shortcuts still work)
   const c = toolColor(l);
   const dis = S.busy ? "disabled" : "";
-  const btns = TOOLS.map(([id, n, key, tip]) => `<button class="tool ${ui.tool === id ? "on" : ""}" data-act="tool" data-tool="${id}" ${dis}
-    title="${n} (${key}): ${tip}" aria-pressed="${ui.tool === id}">${n}<kbd>${key}</kbd></button>`).join("");
+  const tool = ([id, n, key, tip]) => `<button class="dbtn ${ui.tool === id ? "on" : ""}" data-act="tool" data-tool="${id}" ${dis}
+    title="${n} (${key}): ${tip}" aria-label="${n}" aria-pressed="${ui.tool === id}">${ICON[id]}</button>`;
   const pal = l.palette.map((p) => `<button style="background:${p.hex}" class="${p.name === c.name ? "cur" : ""}" data-act="tcolor" data-c="${p.name}" title="${p.name} ${p.hex}"></button>`).join("");
-  if (ui.toolsMin) {  // minimized: the active tool and colour only; the shortcuts keep working
+  const color = `<div class="dcolor"><button class="tcolor" data-act="tpal" style="background:${c.hex}" title="Колір пензля і заливки: ${c.name}" aria-label="Колір ${c.name}" ${dis}></button>
+    <div class="pal-grid tpal" ${ui.toolPal ? "" : "hidden"}>${pal}</div></div>`;
+  if (ui.toolsMin) {
     const t = TOOLS.find(([id]) => id === ui.tool) || TOOLS[0];
-    return `<div class="tools min" role="toolbar" aria-label="Інструменти малювання">
-      <span class="tmin-tool" id="tmin-tool" title="Активний інструмент">${t[1]}<kbd>${t[2]}</kbd></span>
-      <button class="tcolor" data-act="tpal" style="background:${c.hex}" title="Колір пензля і заливки: ${c.name}" aria-label="Колір ${c.name}" ${dis}></button>
-      <button class="tmin-btn" data-act="tools-min" title="Розгорнути інструменти" aria-label="Розгорнути інструменти" aria-expanded="false">▸</button>
-      <div class="pal-grid tpal" ${ui.toolPal ? "" : "hidden"}>${pal}</div></div>`;
+    return `<div class="dgroup" id="tmin-tool">${tool(t)}</div>${color}
+      <button class="dbtn dmin" data-act="tools-min" title="Розгорнути інструменти" aria-label="Розгорнути інструменти" aria-expanded="false">›</button>`;
   }
-  return `<div class="tools" role="toolbar" aria-label="Інструменти малювання">
-    <div class="thead"><span>Інструменти</span><button class="tmin-btn" data-act="tools-min" title="Згорнути інструменти" aria-label="Згорнути інструменти" aria-expanded="true">–</button></div>${btns}
-    <label class="tsize" title="Розмір пензля в пікселях кадру ([ і ])"><input type="range" id="t-size" min="1" max="200" value="${ui.size}" ${dis}><span id="t-size-v">${ui.size}</span></label>
-    <button class="tcolor" data-act="tpal" style="background:${c.hex}" title="Колір пензля і заливки: ${c.name}" aria-label="Колір ${c.name}" ${dis}></button>
-    <div class="pal-grid tpal" ${ui.toolPal ? "" : "hidden"}>${pal}</div>
-    <div class="trow"><button class="tool" data-act="undo" title="Скасувати (Ctrl+Z)" ${dis}>↶</button><button class="tool" data-act="redo" title="Повторити (Ctrl+Shift+Z)" ${dis}>↷</button></div></div>`;
+  return `<div class="dgroup">${TOOLS.map(tool).join("")}</div>${color}
+    <label class="dsize" title="Розмір пензля в пікселях кадру ([ і ])"><input type="range" id="t-size" min="1" max="200" value="${ui.size}" ${dis} aria-label="Розмір пензля"><span id="t-size-v">${ui.size}</span></label>
+    <div class="dgroup"><button class="dbtn" data-act="undo" title="Скасувати (Ctrl+Z)" aria-label="Скасувати" ${dis}>${ICON.undo}</button>
+      <button class="dbtn" data-act="redo" title="Повторити (Ctrl+Shift+Z)" aria-label="Повторити" ${dis}>${ICON.redo}</button></div>
+    <button class="dbtn dmin" data-act="tools-min" title="Згорнути інструменти" aria-label="Згорнути інструменти" aria-expanded="true">‹</button>`;
 }
-
-const TOOL_HINTS = {
-  select: "Клік по області — змінити колір.", brush: "Малюйте кольором палітри. Alt+клік — взяти колір з кадру. Пробіл+тягнути — рухати.",
-  eraser: "Стирає до прозорого. Пробіл+тягнути — рухати.", bucket: "Клік по області — залити поточним кольором (мазки в ній зникнуть).",
-  picker: "Клік по кадру — взяти колір для пензля.",
-};
-const toolHint = () => TOOL_HINTS[ui.tool] || "";
 
 function setTool(t) {
   if (t === ui.tool) return;
   if (t === "picker") ui.prevTool = ui.tool === "select" ? "brush" : ui.tool;
   ui.tool = t;
   closePopover();
-  for (const b of document.querySelectorAll('.tools [data-act="tool"]')) {
+  for (const b of document.querySelectorAll('.dock [data-act="tool"]')) {
     b.classList.toggle("on", b.dataset.tool === t); b.setAttribute("aria-pressed", String(b.dataset.tool === t));
   }
   const fr = $("#frame");
   if (fr && fr.classList.contains("clickable") && ui.mode === "color") fr.className = fr.className.replace(/tool-\w+/, `tool-${t}`);
   const mt = $("#tmin-tool"), tt = TOOLS.find(([id]) => id === t);
-  if (mt && tt) mt.innerHTML = `${tt[1]}<kbd>${tt[2]}</kbd>`;
-  const h = $("#stage-hint");
-  if (h && ui.mode === "color") h.textContent = toolHint();
+  if (mt && tt) {  // minimized dock: show the newly active tool
+    const b = mt.querySelector("button");
+    b.dataset.tool = t; b.innerHTML = ICON[t]; b.title = `${tt[1]} (${tt[2]}): ${tt[3]}`; b.setAttribute("aria-label", tt[1]);
+  }
   updateCursor();
 }
 
@@ -892,7 +899,7 @@ function setColor(name) {
   ui.color = name;
   const l = curLayer();
   if (!l) return;
-  const c = toolColor(l), b = $(".tools .tcolor");
+  const c = toolColor(l), b = $(".dock .tcolor");
   if (b) { b.style.background = c.hex; b.title = `Колір пензля і заливки: ${c.name}`; }
   for (const x of document.querySelectorAll(".tpal button")) x.classList.toggle("cur", x.dataset.c === c.name);
 }
@@ -1148,8 +1155,7 @@ const SHORTCUTS = [
 
 function helpView() {
   const rows = SHORTCUTS.map(([k, t]) => `<kbd>${esc(k)}</kbd><span>${esc(t)}</span>`).join("");
-  return `<button class="help-btn ${ui.help ? "on" : ""}" data-act="help" title="Гарячі клавіші (H)" aria-label="Гарячі клавіші" aria-expanded="${ui.help}">?</button>
-    <div class="help" id="help" ${ui.help ? "" : "hidden"}>${rows}</div>`;
+  return `<div class="help" id="help" ${ui.help ? "" : "hidden"}>${rows}</div>`;
 }
 
 function toggleHelp(on = !ui.help) {
