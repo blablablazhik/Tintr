@@ -40,6 +40,7 @@ const ICON = {
   settings: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>',
   folder: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg>',
   alert: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="flex-shrink:0;margin-top:2px" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h0"/></svg>',
+  more: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
   arrow: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3E5266" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
 };
 
@@ -149,12 +150,41 @@ function header(connected) {
     const view = i === last ? "insert" : "main";
     return `<button class="step ${cls}" data-act="view" data-view="${view}"><span class="dot"></span>${n}</button>` + (i < last ? '<span class="step-sep"></span>' : "");
   }).join("");
+  const busy = !!S.busy;
+  const proj = menu("m-proj", ICON.more, "Проект", [
+    { act: "folder", label: "Відкрити папку з кадрами" },
+    { act: "rescan", label: "Пересканувати проект", hint: "знайти нові шари з тегом _cc-", dis: busy },
+    { act: "settings", label: "Налаштування" },
+  ], "icon-btn");
   return `<header><span class="brand">Tintr</span><span class="proj">${esc(S.project.name)}</span>
     <nav class="steps" aria-label="Кроки">${steps}</nav><div class="grow"></div>
-    <span class="spend">Витрачено на проект ${money(S.cost.project)}</span>
-    <button class="icon-btn" data-act="folder" aria-label="Відкрити папку з кадрами" title="Відкрити папку з кадрами">${ICON.folder}</button>
-    <button class="icon-btn" data-act="settings" aria-label="Налаштування">${ICON.settings}</button></header>`;
+    ${layers().length ? allClipsMenu() : ""}
+    <span class="spend">Витрачено на проект ${money(S.cost.project)}</span>${proj}</header>`;
 }
+
+// ---------- dropdown menus: a trigger with data-act="menu" and a hidden list of actions under it
+function menu(id, trigger, label, items, cls = "btn sm") {
+  const rows = items.map((i) => `<button role="menuitem" data-act="${i.act}" ${i.dis ? "disabled" : ""} ${i.attrs || ""}>
+    <span>${i.label}</span>${i.hint ? `<small>${esc(i.hint)}</small>` : ""}</button>`).join("");
+  return `<div class="menu-wrap"><button class="${cls}" data-act="menu" data-menu="${id}" aria-haspopup="menu" aria-expanded="false" aria-label="${esc(label)}" title="${esc(label)}">${trigger}</button>
+    <div class="menu" id="${id}" role="menu" hidden>${rows}</div></div>`;
+}
+
+function toggleMenu(id) {
+  const m = document.getElementById(id), open = m && m.hidden;
+  closeMenus();
+  if (!open) return;
+  m.hidden = false;
+  m.previousElementSibling.setAttribute("aria-expanded", "true");
+}
+
+function closeMenus() {
+  for (const m of document.querySelectorAll(".menu:not([hidden])")) {
+    m.hidden = true;
+    m.previousElementSibling.setAttribute("aria-expanded", "false");
+  }
+}
+document.addEventListener("mousedown", (e) => { if (!e.target.closest(".menu-wrap")) closeMenus(); });
 
 function footer() {
   return `<footer><span class="last" id="f-last"></span><div class="fbar" id="f-bar" hidden><div class="bar"><div id="f-bar-in" style="width:0"></div></div></div>
@@ -223,21 +253,21 @@ function treeView() {
       <span class="count">${l.done}/${l.total}</span></button>`).join("")}</div>`).join("");
   const scanned = S.project.scanned;
   const empty = scanned ? "Шарів з тегом _cc- не знайдено." : "Проект ще не скановано.";
-  return `<aside class="tree"><div class="tree-head"><span class="eyebrow">Кліпи</span>
-    <button class="link" data-act="rescan" ${S.busy ? "disabled" : ""} title="Знайти шари з тегом _cc- у всіх кліпах">${scanned ? "Пересканувати" : "Сканувати"}</button></div>
+  return `<aside class="tree"><div class="tree-head"><span class="eyebrow">Кліпи</span></div>
     <div class="tree-clips">${clips || `<div style="padding:0 20px;color:var(--muted)">${empty}</div>`}</div>
-    ${clips ? allClipsView() : ""}</aside>`;
+    </aside>`;
 }
 
-function allClipsView() {
+function allClipsMenu() {
   // one parallel run over every clip; layers without a reference are skipped
   const a = S.allAnchors || 0, f = S.allFollows || 0, busy = !!S.busy;
-  const wait = S.awaiting ? `<small class="tone-accent">${S.awaiting} якір(ів) чекають затвердження</small>` : "";
-  return `<div class="tree-all"><span class="eyebrow">Усі кліпи · паралельно</span>
-    <button class="btn sm" data-act="all-anchors" ${a && !busy ? "" : "disabled"} title="Якорі всіх шарів, у яких є референс і якір ще не розфарбовано">
-      Розфарбувати всі якорі${a ? ` · ${a}` : ""}</button>
-    <button class="btn sm" data-act="all-follows" ${f && !busy ? "" : "disabled"} title="Ключові кадри всіх шарів із затвердженим якорем">
-      Розфарбувати всі кадри${f ? ` · ${f}` : ""}</button>${wait}</div>`;
+  const items = [
+    { act: "all-anchors", label: `Усі якорі${a ? ` · ${a}` : ""}`, hint: "шари з референсом, де якір ще не розфарбовано", dis: !a || busy },
+    { act: "all-follows", label: `Усі кадри за якорями${f ? ` · ${f}` : ""}`, hint: "шари із затвердженим якорем", dis: !f || busy },
+  ];
+  if (S.awaiting) items.push({ act: "noop", label: `${S.awaiting} якір(ів) чекають затвердження`, hint: "затвердьте їх, щоб розфарбувати кадри", dis: true });
+  const n = a + f;
+  return menu("m-all", `Розфарбувати все${n ? ` · ${n}` : ""} ▾`, "Розфарбувати всі кліпи паралельно", items, `btn sm${n && !busy ? " all-on" : ""}`);
 }
 
 function layerState(l) {
@@ -274,11 +304,14 @@ function centerView() {
   if (k && k.anchor) state = l.anchorApproved ? '<span class="tone-ok" style="font-size:12px">якір затверджено</span>' : k.colored ? '<span class="tone-accent" style="font-size:12px">якір чекає затвердження</span>' : "";
   else if (k && k.colored && m && m.followed) state = '<span class="tone-ok" style="font-size:12px">розфарбовано за якорем</span>';
   if (k && k.error) state = `<span class="tone-warn" style="font-size:12px" title="${esc(k.error)}">помилка</span>`;
+  const more = menu("m-layer", ICON.more, "Дії з шаром", [
+    { act: "set-anchor", label: `Зробити ключ #${m ? m.idx : "–"} якорем`, hint: canAnchor ? "якір задає кольори решти кадрів" : "цей ключ уже якір", dis: !canAnchor },
+    { act: "export", label: "Оновити ключі з TVPaint", hint: "якщо кадри змінили в TVPaint", dis: !!S.busy },
+    { act: "ref", label: l.refUrl ? "Змінити референс" : "Обрати референс", dis: !!S.busy },
+  ], "icon-btn");
   return `<main class="center">
     <div class="toolbar"><b>${esc(l.name)}</b><span class="info">${info}</span>${state}<div class="grow"></div>
-      ${canAnchor ? `<button class="btn sm" data-act="set-anchor">Зробити якорем</button>` : ""}
-      <button class="btn sm" data-act="export" ${S.busy ? "disabled" : ""}>Оновити ключі з TVPaint</button>
-      <div class="modes" role="group" aria-label="Що показати">${modeBtns}</div></div>
+      <div class="modes" role="group" aria-label="Що показати">${modeBtns}</div>${more}</div>
     <div class="stage" id="stage">${stageView(l, k)}${helpView()}</div>
     ${groupsView(l)}
   </main>`;
@@ -733,7 +766,9 @@ async function onClick(e) {
   if (!b || b.disabled) return;
   const act = b.dataset.act;
   const l = curLayer();
+  if (act !== "menu") closeMenus();
   switch (act) {
+    case "menu": toggleMenu(b.dataset.menu); break;
     case "connect": doConnect(); break;
     case "settings": openSettings(); break;
     case "folder": call("open_folder"); break;
@@ -1163,7 +1198,7 @@ document.addEventListener("mousedown", (e) => {
   if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame")) closePopover();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closePopover(); closeModal(); toggleAnchor(false); toggleRef(false); togglePipette(false); if (ui.help) toggleHelp(false); return; }
+  if (e.key === "Escape") { closeMenus(); closePopover(); closeModal(); toggleAnchor(false); toggleRef(false); togglePipette(false); if (ui.help) toggleHelp(false); return; }
   if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") { e.preventDefault(); undoRedo(e.shiftKey); return; }
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyY") { e.preventDefault(); undoRedo(true); return; }
