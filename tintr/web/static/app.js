@@ -461,15 +461,20 @@ function actionView(l) {
         <button class="btn primary" data-act="approve" ${dis}>Затвердити</button></div>`;
     case "frames":
       return `<b>Кадри за якорем</b><p>Якір #${a.idx} затверджено. ${l.followsN} унікальних кадр(ів) розфарбуються за ним, повтори отримають колір автоматично.</p>
-        <button class="btn primary" data-act="follows" ${dis}>Розфарбувати ${l.followsN} кадр(ів) · ~${money(l.followsN * S.estFollow)}</button>`;
+        <button class="btn primary" data-act="follows" ${dis}>Розфарбувати ${l.followsN} кадр(ів) · ~${money(l.followsN * S.estFollow)}</button>${recolorLink(dis)}`;
     case "ready":
       return `<b>Усі кадри готові</b><p>${l.total} кадр(ів) розфарбовано. Можна вставляти в TVPaint.</p>
-        <button class="btn primary" data-act="view" data-view="insert">До вставки</button>`;
+        <button class="btn primary" data-act="view" data-view="insert">До вставки</button>${recolorLink(dis)}`;
     case "done":
       return `<b>Вставлено в TVPaint</b><p>Шар ${esc(l.name)}_color створено під лайном.</p>
-        <button class="btn" data-act="view" data-view="insert">Вставити знову</button>`;
+        <button class="btn" data-act="view" data-view="insert">Вставити знову</button>${recolorLink(dis)}`;
   }
   return "";
+}
+
+function recolorLink(dis) {
+  // the anchor can be recoloured at any stage, also after approval
+  return `<button class="link" data-act="recolor-anchor" ${dis} title="Розфарбувати якір заново: затвердження буде знято, решту кадрів потім розфарбуєте за новим якорем">Перефарбувати якір</button>`;
 }
 
 function progressBlock(l) {
@@ -559,7 +564,8 @@ async function onClick(e) {
       if (await confirmCost(`Gemini розфарбує якір шару ${l.name}.`, S.est)) call("colorize_anchor", l.uid, false);
       break;
     case "recolor-anchor":
-      if (await confirmCost(`Gemini розфарбує якір шару ${l.name} заново. Поточні кольори якоря буде замінено.`, S.est)) call("colorize_anchor", l.uid, true);
+      if (await confirmCost(`Gemini розфарбує якір шару ${l.name} заново. Поточні кольори якоря буде замінено`
+        + (l.anchorApproved ? ", затвердження знято. Після нового затвердження решту кадрів треба буде розфарбувати знову." : "."), S.est)) call("colorize_anchor", l.uid, true);
       break;
     case "approve": call("approve_anchor", l.uid); break;
     case "follows":
