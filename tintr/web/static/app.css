@@ -111,6 +111,29 @@ header { height: 56px; flex-shrink: 0; display: flex; align-items: center; gap: 
 .zoombar .btn.sm.on { background: var(--raise); color: var(--fg); }
 .no-lines img.lines { display: none; }
 .frame.clickable { cursor: crosshair; }
+.frame.clickable.tool-brush, .frame.clickable.tool-eraser { cursor: none; }
+.frame.clickable.tool-bucket { cursor: cell; }
+.frame.space-pan, .frame.space-pan.clickable { cursor: grab; }
+.edit-slot { position: absolute; inset: 0; }
+.edit-slot > img, .edit-slot > canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.zoomed .edit-slot > canvas { image-rendering: pixelated; }
+#brush-cursor { position: fixed; z-index: 25; pointer-events: none; transform: translate(-50%, -50%); border-radius: 50%;
+  border: 1px solid #FFFFFF; box-shadow: 0 0 0 1px rgba(0, 0, 0, .7), inset 0 0 0 1px rgba(0, 0, 0, .7); }
+#brush-cursor.erase { border-style: dashed; }
+.tools { position: absolute; left: 12px; top: 12px; z-index: 2; width: 112px; display: flex; flex-direction: column; gap: 3px; padding: 5px;
+  border-radius: 8px; background: var(--pop); border: 1px solid var(--border); }
+.tools .tool { height: 26px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 0 8px; border: 0; border-radius: 5px;
+  background: transparent; color: var(--fg2); font-size: 12px; }
+.tools .tool:hover:not(:disabled) { color: var(--fg); background: var(--line); }
+.tools .tool.on { background: var(--raise); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
+.tools kbd { font: 10px var(--mono); color: var(--faint); }
+.tools .tsize { display: flex; align-items: center; gap: 4px; padding: 4px 2px 0; font-size: 11px; color: var(--fg2); font-variant-numeric: tabular-nums; }
+.tools .tsize input { width: 70px; accent-color: var(--accent); }
+.tools .tcolor { height: 24px; border-radius: 5px; border: 2px solid var(--fg); margin-top: 2px; }
+.tools .tpal { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.tools .tpal button { height: 20px; }
+.tools .trow { display: flex; gap: 3px; }
+.tools .trow .tool { flex: 1; justify-content: center; font-size: 15px; }
 .frame.anchor-ref { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cap { font-size: 12px; color: var(--muted); text-align: center; margin-top: 8px; }
 .figure { display: flex; flex-direction: column; align-items: center; min-width: 0; }

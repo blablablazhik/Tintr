@@ -13,6 +13,10 @@ const ui = {
   hideLines: false,                  // coloured frames without the line art on top (KeyL), kept across keys
   pipette: false,                    // the next click on the reference adds its colour to the palette
   palNote: "",                       // short note under the palette (pipette result)
+  tool: "select", prevTool: "brush",  // drawing tools over the coloured frame: select brush eraser bucket picker
+  size: 12, color: null,             // brush diameter in frame px; palette name ("C3") of brush and bucket
+  toolPal: false, space: false,      // tool palette open; Space held (left drag pans)
+  overRef: false,                    // the cursor is over the reference (I = pipette into the palette there)
 };
 
 const REMOTE = !!window.TINTR_REMOTE;
@@ -289,19 +293,23 @@ function stageView(l, k) {
     const mode = modesFor(a).includes(ui.mode) ? ui.mode : "color";
     return frameHtml(a, mode, true, "", false) + zoomBar(mode) + `<span class="anchor-tag">Якір · ключ #${a.idx}</span>`;
   }
-  const big = frameHtml(k, ui.mode, true) + zoomBar(ui.mode);
+  const big = frameHtml(k, ui.mode, true) + zoomBar(ui.mode) + (ui.mode === "color" && master(l, k).colored ? toolsView(l) : "");
   const hint = ui.mode === "regions" ? "Це бачить Gemini. Клік по області — змінити колір."
-    : ui.mode === "color" ? "Клік по області — змінити колір." : "";
-  return big + (hint && master(l, k).colored ? `<span class="stage-hint">${hint}</span>` : ui.mode === "regions" ? `<span class="stage-hint">Області, які бачить Gemini.</span>` : "");
+    : ui.mode === "color" ? toolHint() : "";
+  return big + (hint && master(l, k).colored ? `<span class="stage-hint" id="stage-hint">${hint}</span>` : ui.mode === "regions" ? `<span class="stage-hint">Області, які бачить Gemini.</span>` : "");
 }
 
 function frameHtml(k, mode, main, extra = "", editable = true) {
   const W = S.project.w, H = S.project.h;
   let imgs = "", paper = "";
-  if (mode === "color") { imgs = `<img src="${k.color}" alt=""><img class="lines" src="${k.key}" alt="">`; paper = "paper" + (ui.hideLines ? " no-lines" : ""); }
+  if (mode === "color") {
+    const ed = main && editable ? editorFor(curLayer(), k) : null;  // drawing tools draw into a canvas here
+    const base = ed ? `<div class="edit-slot" data-ed="${ed.id}"><img src="${k.color}" alt=""></div>` : `<img src="${k.color}" alt="">`;
+    imgs = `${base}<img class="lines" src="${k.key}" alt="">`; paper = "paper" + (ui.hideLines ? " no-lines" : "");
+  }
   else if (mode === "regions") imgs = `<img src="${k.regions}" alt="">`;
   else imgs = `<img src="${k.key}" alt="">`;
-  const click = main && editable && mode !== "line" ? "clickable" : "";
+  const click = main && editable && mode !== "line" ? `clickable tool-${mode === "color" ? ui.tool : "select"}` : "";
   return `<div class="frame ${paper} ${click} ${extra}" ${main ? 'id="frame" data-zoom="main"' : ""} data-w="${W}" data-h="${H}" style="aspect-ratio:${W}/${H}"><div class="zoom" ${main ? 'id="zoom"' : ""}>${imgs}</div></div>`;
 }
 
@@ -416,7 +424,8 @@ function bindZoomable(name) {
   el.addEventListener("mousedown", (e) => {
     ui.panned = false;
     const Z = zstate(target);
-    if (!(e.button === 1 || (e.button === 0 && (name !== "main" || Z.s > 1)))) return;
+    const leftPans = name !== "main" || ui.space || (Z.s > 1 && !drawing());
+    if (!(e.button === 1 || (e.button === 0 && leftPans))) return;
     e.preventDefault();
     const x0 = e.clientX, y0 = e.clientY, zx = Z.x, zy = Z.y, f = target !== name ? linkScale(name) : 1;
     const move = (ev) => {
@@ -566,7 +575,8 @@ function bindPipette() {
     prev.hidden = !c;
     if (c) { prev.style.background = c; prev.style.left = `${e.clientX + 14}px`; prev.style.top = `${e.clientY + 14}px`; }
   });
-  ref.addEventListener("mouseleave", () => { prev.hidden = true; });
+  ref.addEventListener("mouseleave", () => { prev.hidden = true; ui.overRef = false; });
+  ref.addEventListener("mouseenter", () => { ui.overRef = true; });
   ref.addEventListener("click", async (e) => {
     if (!ui.pipette || ui.panned || S.busy) return;
     const c = refColorAt(e.clientX, e.clientY);
@@ -701,7 +711,13 @@ function bindCommon() {
 function bindMain() {
   bindCommon();
   const fr = $("#frame");
-  if (fr && fr.classList.contains("clickable")) fr.addEventListener("click", onFrameClick);
+  if (fr && fr.classList.contains("clickable")) {
+    fr.addEventListener("click", onFrameClick);
+    fr.addEventListener("mousedown", onDrawStart);  // bound before the pan handler: brush/eraser drags draw
+  }
+  mountEditor();
+  const ts = $("#t-size");
+  if (ts) ts.addEventListener("input", () => setSize(+ts.value));
   for (const img of document.querySelectorAll("#stage img")) img.addEventListener("load", fitFrames, { once: true });
   for (const el of document.querySelectorAll("#app [data-zoom]")) bindZoomable(el.dataset.zoom);
   bindPipette();
@@ -732,6 +748,14 @@ async function onClick(e) {
     case "zoom": zoomCmd(b.dataset.z); break;
     case "lines": toggleLines(); break;
     case "pipette": togglePipette(); break;
+    case "tool": setTool(b.dataset.tool); break;
+    case "tpal": ui.toolPal = !ui.toolPal; $(".tpal").hidden = !ui.toolPal; break;
+    case "tcolor":
+      setColor(b.dataset.c); ui.toolPal = false; $(".tpal").hidden = true;
+      if (ui.tool === "select" || ui.tool === "picker") setTool("brush");
+      break;
+    case "undo": undoRedo(false); break;
+    case "redo": undoRedo(true); break;
     case "key": ui.idx = +b.dataset.idx; ui.showAnchor = false; closePopover(); render(); break;
     case "mode": ui.mode = b.dataset.mode; closePopover(); render(); break;
     case "rescan": call("connect", null, true); break;
@@ -763,14 +787,321 @@ async function onClick(e) {
   }
 }
 
+// ---------- drawing tools over the coloured frame: brush, eraser, bucket, picker
+// The canvas shows fill → erase → paint at the frame's full resolution inside the zoom layer, so zoom and pan
+// work as for the images. Strokes are hard-edged (flat colours for TVPaint) and saved as whole layers.
+const TOOLS = [["select", "Вибір", "V", "клік по області — колір з палітри"], ["brush", "Пензель", "B", "Alt+клік — взяти колір з кадру"],
+  ["eraser", "Гумка", "E", "стирає до прозорого"], ["bucket", "Заливка", "G", "залити область поточним кольором"],
+  ["picker", "Піпетка", "I", "взяти колір з кадру"]];
+const editors = {};  // "uid:masterIdx" → editor (kept across renders: the canvas node is moved into the new DOM)
+const drawing = () => ui.mode === "color" && (ui.tool === "brush" || ui.tool === "eraser") && !ui.showAnchor;
+
+function toolColor(l) {
+  const p = l.palette.find((c) => c.name === ui.color) || l.palette[0];
+  if (p) ui.color = p.name;
+  return p || { name: "", hex: "#000000" };
+}
+
+function toolsView(l) {
+  const c = toolColor(l);
+  const dis = S.busy ? "disabled" : "";
+  const btns = TOOLS.map(([id, n, key, tip]) => `<button class="tool ${ui.tool === id ? "on" : ""}" data-act="tool" data-tool="${id}" ${dis}
+    title="${n} (${key}): ${tip}" aria-pressed="${ui.tool === id}">${n}<kbd>${key}</kbd></button>`).join("");
+  const pal = l.palette.map((p) => `<button style="background:${p.hex}" class="${p.name === c.name ? "cur" : ""}" data-act="tcolor" data-c="${p.name}" title="${p.name} ${p.hex}"></button>`).join("");
+  return `<div class="tools" role="toolbar" aria-label="Інструменти малювання">${btns}
+    <label class="tsize" title="Розмір пензля в пікселях кадру ([ і ])"><input type="range" id="t-size" min="1" max="200" value="${ui.size}" ${dis}><span id="t-size-v">${ui.size}</span></label>
+    <button class="tcolor" data-act="tpal" style="background:${c.hex}" title="Колір пензля і заливки: ${c.name}" aria-label="Колір ${c.name}" ${dis}></button>
+    <div class="pal-grid tpal" ${ui.toolPal ? "" : "hidden"}>${pal}</div>
+    <div class="trow"><button class="tool" data-act="undo" title="Скасувати (Ctrl+Z)" ${dis}>↶</button><button class="tool" data-act="redo" title="Повторити (Ctrl+Shift+Z)" ${dis}>↷</button></div></div>`;
+}
+
+const TOOL_HINTS = {
+  select: "Клік по області — змінити колір.", brush: "Малюйте кольором палітри. Alt+клік — взяти колір з кадру. Пробіл+тягнути — рухати.",
+  eraser: "Стирає до прозорого. Пробіл+тягнути — рухати.", bucket: "Клік по області — залити поточним кольором (мазки в ній зникнуть).",
+  picker: "Клік по кадру — взяти колір для пензля.",
+};
+const toolHint = () => TOOL_HINTS[ui.tool] || "";
+
+function setTool(t) {
+  if (t === ui.tool) return;
+  if (t === "picker") ui.prevTool = ui.tool === "select" ? "brush" : ui.tool;
+  ui.tool = t;
+  closePopover();
+  for (const b of document.querySelectorAll('.tools [data-act="tool"]')) {
+    b.classList.toggle("on", b.dataset.tool === t); b.setAttribute("aria-pressed", String(b.dataset.tool === t));
+  }
+  const fr = $("#frame");
+  if (fr && fr.classList.contains("clickable") && ui.mode === "color") fr.className = fr.className.replace(/tool-\w+/, `tool-${t}`);
+  const h = $("#stage-hint");
+  if (h && ui.mode === "color") h.textContent = toolHint();
+  updateCursor();
+}
+
+function setSize(v) {
+  ui.size = Math.max(1, Math.min(200, Math.round(v)));
+  const inp = $("#t-size"), lbl = $("#t-size-v");
+  if (inp) inp.value = ui.size;
+  if (lbl) lbl.textContent = ui.size;
+  updateCursor();
+}
+
+function setColor(name) {
+  ui.color = name;
+  const l = curLayer();
+  if (!l) return;
+  const c = toolColor(l), b = $(".tools .tcolor");
+  if (b) { b.style.background = c.hex; b.title = `Колір пензля і заливки: ${c.name}`; }
+  for (const x of document.querySelectorAll(".tpal button")) x.classList.toggle("cur", x.dataset.c === c.name);
+}
+
+function framePoint(cx, cy) {
+  const r = $("#zoom").getBoundingClientRect();  // zoomed/panned image box
+  return { x: ((cx - r.left) / r.width) * S.project.w, y: ((cy - r.top) / r.height) * S.project.h };
+}
+
+function editorFor(l, k) {
+  const m = l && k ? master(l, k) : null;
+  if (!m || !m.colored) return null;
+  const id = `${l.uid}:${m.idx}`, urls = [m.fill, m.paint, m.erase].join("|");
+  let ed = editors[id];
+  // changed elsewhere (region colour, bucket, refill): reload, unless strokes are still being sent
+  if (ed && ed.urls !== urls && !ed.dirty && !ed.saving) { delete editors[id]; ed = null; }
+  if (!ed) {
+    for (const x of Object.keys(editors)) if (!editors[x].dirty && !editors[x].saving) delete editors[x];  // keep memory small
+    ed = editors[id] = newEditor(id, l.uid, m, urls);
+  }
+  return ed;
+}
+
+function loadPixels(url, W, H) {
+  if (!url) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas"); c.width = W; c.height = H;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, W, H);
+      resolve(ctx.getImageData(0, 0, W, H).data);
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
+function newEditor(id, uid, m, urls) {
+  const W = S.project.w, H = S.project.h;
+  const cv = document.createElement("canvas");
+  cv.width = W; cv.height = H; cv.className = "edit-canvas";
+  const ed = { id, uid, idx: m.idx, W, H, cv, ctx: cv.getContext("2d"), urls, ready: false, dirty: false, saving: null, undo: [], redo: [] };
+  Promise.all([m.fill, m.paint, m.erase].map((u) => loadPixels(u, W, H))).then(([f, p, e]) => {
+    if (!f) return;
+    ed.fill = f;
+    ed.paint = p || new Uint8ClampedArray(W * H * 4);
+    ed.erase = e || new Uint8ClampedArray(W * H * 4);
+    ed.comp = ed.ctx.createImageData(W, H);
+    composite(ed, 0, 0, W, H);
+    ed.ready = true;
+    mountEditor();
+  });
+  return ed;
+}
+
+function mountEditor() {
+  const slot = document.querySelector(".edit-slot");
+  const ed = slot && editors[slot.dataset.ed];
+  if (ed && ed.ready && slot.firstElementChild !== ed.cv) slot.replaceChildren(ed.cv);
+}
+
+function composite(ed, x, y, w, h) {
+  // paint over everything, erased pixels transparent, the flat fill elsewhere
+  const { W, fill, paint, erase } = ed, out = ed.comp.data;
+  for (let j = y; j < y + h; j++) {
+    for (let i = (j * W + x) * 4, end = (j * W + x + w) * 4; i < end; i += 4) {
+      if (paint[i + 3] >= 128) { out[i] = paint[i]; out[i + 1] = paint[i + 1]; out[i + 2] = paint[i + 2]; out[i + 3] = 255; }
+      else if (erase[i + 3] >= 128) { out[i] = out[i + 1] = out[i + 2] = out[i + 3] = 0; }
+      else { out[i] = fill[i]; out[i + 1] = fill[i + 1]; out[i + 2] = fill[i + 2]; out[i + 3] = fill[i + 3]; }
+    }
+  }
+  ed.ctx.putImageData(ed.comp, 0, 0, x, y, w, h);
+}
+
+function stamp(ed, cx, cy, st) {
+  // a hard circle of diameter ui.size (no anti-aliasing) into the paint / erase layers
+  const r = ui.size / 2, W = ed.W, H = ed.H;
+  const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(W - 1, Math.ceil(cx + r));
+  const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(H - 1, Math.ceil(cy + r));
+  if (x0 > x1 || y0 > y1) return;
+  const r2 = ui.size <= 1 ? 0.5 : r * r, [R, G, B] = st.rgb, er = st.tool === "eraser";
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x + 0.5 - cx, dy = y + 0.5 - cy;
+      if (dx * dx + dy * dy > r2) continue;
+      const i = (y * W + x) * 4;
+      if (er) { ed.paint[i + 3] = 0; ed.erase[i + 3] = 255; }
+      else { ed.paint[i] = R; ed.paint[i + 1] = G; ed.paint[i + 2] = B; ed.paint[i + 3] = 255; ed.erase[i + 3] = 0; }
+    }
+  }
+  st.box = st.box ? [Math.min(st.box[0], x0), Math.min(st.box[1], y0), Math.max(st.box[2], x1), Math.max(st.box[3], y1)] : [x0, y0, x1, y1];
+  composite(ed, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+}
+
+function stampLine(ed, a, b, st) {
+  const d = Math.hypot(b.x - a.x, b.y - a.y), step = Math.max(0.5, ui.size / 4), n = Math.max(1, Math.ceil(d / step));
+  for (let t = 1; t <= n; t++) stamp(ed, a.x + ((b.x - a.x) * t) / n, a.y + ((b.y - a.y) * t) / n, st);
+}
+
+function rect(arr, W, [x0, y0, x1, y1]) {
+  const w = x1 - x0 + 1, out = new Uint8ClampedArray(w * (y1 - y0 + 1) * 4);
+  for (let y = y0; y <= y1; y++) out.set(arr.subarray((y * W + x0) * 4, (y * W + x1 + 1) * 4), (y - y0) * w * 4);
+  return out;
+}
+
+function putRect(arr, W, [x0, y0, x1, y1], data) {
+  const w = x1 - x0 + 1;
+  for (let y = y0; y <= y1; y++) arr.set(data.subarray((y - y0) * w * 4, (y - y0 + 1) * w * 4), (y * W + x0) * 4);
+}
+
+function onDrawStart(e) {
+  if (e.button !== 0 || ui.space || !drawing() || S.busy) return;
+  const l = curLayer(), ed = editorFor(l, curKey());
+  if (!ed || !ed.ready) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();  // not a pan
+  closePopover();
+  if (e.altKey) { pickColorAt(e.clientX, e.clientY, true); return; }
+  const c = toolColor(l);
+  const st = { tool: ui.tool, rgb: [1, 3, 5].map((i) => parseInt(c.hex.slice(i, i + 2), 16)), box: null,
+    p0: ed.paint.slice(), e0: ed.erase.slice() };  // before the stroke, for undo (only the touched box is kept)
+  let last = framePoint(e.clientX, e.clientY);
+  stamp(ed, last.x, last.y, st);
+  const move = (ev) => {
+    const p = framePoint(ev.clientX, ev.clientY);
+    stampLine(ed, last, p, st);
+    last = p;
+  };
+  const up = () => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+    if (!st.box) return;
+    ed.undo.push({ box: st.box, bp: rect(st.p0, ed.W, st.box), be: rect(st.e0, ed.W, st.box), ap: rect(ed.paint, ed.W, st.box), ae: rect(ed.erase, ed.W, st.box) });
+    if (ed.undo.length > 50) ed.undo.shift();
+    ed.redo = [];
+    scheduleSave(ed);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+}
+
+function undoRedo(redo) {
+  const l = curLayer(), k = curKey();
+  const ed = l && k && ui.mode === "color" && !ui.showAnchor ? editors[`${l.uid}:${master(l, k).idx}`] : null;
+  if (!ed || !ed.ready || S.busy) return;
+  const step = (redo ? ed.redo : ed.undo).pop();
+  if (!step) return;
+  (redo ? ed.undo : ed.redo).push(step);
+  putRect(ed.paint, ed.W, step.box, redo ? step.ap : step.bp);
+  putRect(ed.erase, ed.W, step.box, redo ? step.ae : step.be);
+  const [x0, y0, x1, y1] = step.box;
+  composite(ed, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+  scheduleSave(ed);
+}
+
+function scheduleSave(ed) {
+  ed.dirty = true;
+  clearTimeout(ed.timer);
+  ed.timer = setTimeout(() => savePaint(ed), 400);
+}
+
+function layerPng(ed, arr) {
+  let any = false;
+  for (let i = 3; i < arr.length; i += 4) if (arr[i] >= 128) { any = true; break; }
+  if (!any) return "";
+  const c = document.createElement("canvas"); c.width = ed.W; c.height = ed.H;
+  const ctx = c.getContext("2d");
+  const d = ctx.createImageData(ed.W, ed.H); d.data.set(arr);
+  ctx.putImageData(d, 0, 0);
+  return c.toDataURL("image/png").split(",")[1];
+}
+
+async function savePaint(ed) {
+  // one request at a time; strokes made meanwhile go in the next one
+  clearTimeout(ed.timer);
+  while (ed.saving) await ed.saving;
+  if (!ed.dirty) return;
+  ed.dirty = false;
+  ed.saving = (async () => {
+    let r = {};
+    try { r = await api().save_paint(ed.uid, ed.idx, layerPng(ed, ed.paint), layerPng(ed, ed.erase)); }
+    catch (e) { r = { ok: false, error: String(e) }; }
+    if (r.ok === false) { ed.dirty = true; modal(errorDialog("Мазки не збережено", r.error || "")); }
+    if (r.state) {  // our own save: the new file URLs show what this editor already has
+      const l = (r.state.clips || []).flatMap((c) => c.layers).find((x) => x.uid === ed.uid);
+      const m = l && l.keys.find((x) => x.idx === ed.idx);
+      if (m) ed.urls = [m.fill, m.paint, m.erase].join("|");
+    }
+    ed.saving = null;
+    if (r.state) setState(r.state);
+  })();
+  return ed.saving;
+}
+
+async function flushPaint() {
+  for (const ed of Object.values(editors)) {
+    if (ed.dirty) await savePaint(ed);
+    while (ed.saving) await ed.saving;
+  }
+}
+
+function pickColorAt(cx, cy, keepTool = false) {
+  // colour under the cursor → the nearest palette colour (brush and bucket paint with palette colours only)
+  const l = curLayer(), ed = editorFor(l, curKey());
+  if (!ed || !ed.ready) return;
+  const { x, y } = framePoint(cx, cy);
+  const xi = Math.floor(x), yi = Math.floor(y);
+  if (xi < 0 || yi < 0 || xi >= ed.W || yi >= ed.H) return;
+  const d = ed.comp.data, i = (yi * ed.W + xi) * 4;
+  if (d[i + 3] < 128) return;  // transparent
+  let best = null, bd = Infinity;
+  for (const p of l.palette) {
+    const dist = [1, 3, 5].reduce((acc, j, n) => acc + (parseInt(p.hex.slice(j, j + 2), 16) - d[i + n]) ** 2, 0);
+    if (dist < bd) { bd = dist; best = p; }
+  }
+  if (best) setColor(best.name);
+  if (!keepTool && ui.tool === "picker") setTool(ui.prevTool || "brush");
+}
+
+// brush outline under the cursor, sized by the zoom
+let lastMouse = null;
+function updateCursor() {
+  const cur = $("#brush-cursor"), fr = $("#frame");
+  if (!cur) return;
+  const over = lastMouse && fr && fr.contains(document.elementFromPoint(lastMouse.x, lastMouse.y));
+  const show = !!(drawing() && over && fr.classList.contains("clickable") && !ui.space);
+  cur.hidden = !show;
+  if (!show) return;
+  const px = Math.max(3, (ui.size * fr.clientWidth * zstate("main").s) / S.project.w);
+  cur.style.width = cur.style.height = `${px}px`;
+  cur.style.left = `${lastMouse.x}px`; cur.style.top = `${lastMouse.y}px`;
+  cur.classList.toggle("erase", ui.tool === "eraser");
+}
+document.addEventListener("mousemove", (e) => { lastMouse = { x: e.clientX, y: e.clientY }; updateCursor(); });
+document.addEventListener("wheel", () => requestAnimationFrame(updateCursor), { passive: true });
+
 // ---------- region popover
 async function onFrameClick(e) {
   if (ui.panned) { ui.panned = false; return; }  // the press was a pan drag
   if (S.busy) return;
   const l = curLayer(), k = curKey();
-  const r = $("#zoom").getBoundingClientRect();  // zoomed/panned image box
-  const x = ((e.clientX - r.left) / r.width) * S.project.w;
-  const y = ((e.clientY - r.top) / r.height) * S.project.h;
+  const tool = ui.mode === "color" ? ui.tool : "select";
+  if (tool === "brush" || tool === "eraser") return;  // strokes are handled on mousedown
+  if (tool === "picker") { pickColorAt(e.clientX, e.clientY); return; }
+  const { x, y } = framePoint(e.clientX, e.clientY);
+  await flushPaint();  // region edits redraw the fill: send pending strokes first
+  if (tool === "bucket") {
+    const res = await api().region_at(l.uid, k.idx, x, y);
+    if (res && res.ok && res.editable) await call("fill_region", l.uid, k.idx, res.region, toolColor(l).name);
+    return;
+  }
   const res = await api().region_at(l.uid, k.idx, x, y);
   if (!res || !res.ok) { closePopover(); return; }
   const pop = $("#popover");
@@ -796,14 +1127,27 @@ document.addEventListener("mousedown", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { closePopover(); closeModal(); toggleAnchor(false); togglePipette(false); return; }
   if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
+  if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") { e.preventDefault(); undoRedo(e.shiftKey); return; }
+  if ((e.ctrlKey || e.metaKey) && e.code === "KeyY") { e.preventDefault(); undoRedo(true); return; }
   if (e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.code === "Space") { e.preventDefault(); if (!ui.space) { ui.space = true; $("#frame")?.classList.add("space-pan"); updateCursor(); } return; }
   if (e.key === "+" || e.key === "=") zoomCmd("in");
   else if (e.key === "-") zoomCmd("out");
   else if (e.key === "0" || e.code === "KeyF") zoomCmd("fit");  // F: any keyboard layout
   else if (e.code === "KeyA") toggleAnchor();  // any keyboard layout
   else if (e.code === "KeyL") toggleLines();
-  else if (e.code === "KeyI") togglePipette();
+  else if (e.code === "KeyI") { if (ui.overRef) togglePipette(); else setTool("picker"); }  // over the reference: into the palette
+  else if (e.code === "KeyV") setTool("select");
+  else if (e.code === "KeyB") setTool("brush");
+  else if (e.code === "KeyE") setTool("eraser");
+  else if (e.code === "KeyG") setTool("bucket");
+  else if (e.code === "BracketLeft") setSize(ui.size > 10 ? ui.size / 1.25 : ui.size - 1);
+  else if (e.code === "BracketRight") setSize(ui.size >= 10 ? ui.size * 1.25 : ui.size + 1);
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); stepKey(e.key === "ArrowRight" ? 1 : -1); }
+});
+
+document.addEventListener("keyup", (e) => {
+  if (e.code === "Space") { ui.space = false; $("#frame")?.classList.remove("space-pan"); updateCursor(); }
 });
 
 function stepKey(dir) {
