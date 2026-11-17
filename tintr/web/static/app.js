@@ -121,7 +121,8 @@ function modesFor(k) {
   return out;
 }
 
-const STEP_OF_STAGE = { missing: 0, export: 0, ref: 1, anchor: 1, approve: 1, frames: 2, ready: 3, done: 4 };
+// the anchor and the frames after it are one step: the same stage, strip and tools
+const STEP_OF_STAGE = { missing: 0, export: 0, ref: 1, anchor: 1, approve: 1, frames: 1, ready: 2, done: 3 };
 
 // ------------------------------------------------------------------ render
 function render() {
@@ -142,12 +143,11 @@ function header(connected) {
   }
   const l = curLayer();
   const cur = l ? STEP_OF_STAGE[l.stage] : 0;
-  const names = ["Ключі", "Якір", "Кадри", "Вставка"];
+  const names = ["Ключі", "Розфарбування", "Вставка"], last = names.length - 1;
   const steps = names.map((n, i) => {
-    const cls = cur > i ? "done" : cur === i || (i === 3 && cur === 4) ? "current" : "todo";
-    const view = i === 3 ? "insert" : "main";
-    const on = ui.view === view && (i === 3 || cls === "current");
-    return `<button class="step ${cls}${on ? "" : ""}" data-act="view" data-view="${view}"><span class="dot"></span>${n}</button>` + (i < 3 ? '<span class="step-sep"></span>' : "");
+    const cls = cur > i ? "done" : cur === i || (i === last && cur > last) ? "current" : "todo";
+    const view = i === last ? "insert" : "main";
+    return `<button class="step ${cls}" data-act="view" data-view="${view}"><span class="dot"></span>${n}</button>` + (i < last ? '<span class="step-sep"></span>' : "");
   }).join("");
   return `<header><span class="brand">Tintr</span><span class="proj">${esc(S.project.name)}</span>
     <nav class="steps" aria-label="Кроки">${steps}</nav><div class="grow"></div>
