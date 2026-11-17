@@ -631,11 +631,12 @@ function sideView() {
        <div class="palette" id="palette">${l.palette.map((p) => `<span class="${p.extra ? "extra" : ""}" data-name="${p.name}" style="background:${p.hex}"
          title="${p.name} ${p.hex}${p.extra ? " · додано піпеткою · права кнопка — видалити" : ""}"></span>`).join("")}</div>`
     : `<div class="ref none"><span>Референс не вибрано</span><button class="btn primary" data-act="ref">Оберіть референс</button></div>`;
-  return `<aside class="side"><div class="side-head"><span class="eyebrow">Референс · ${esc(l.name)}</span>
+  return `<aside class="side"><div class="action" id="action">${actionView(l)}</div>
+    <div class="side-head"><span class="eyebrow">Референс · ${esc(l.name)}</span>
     ${l.refUrl ? `<button class="link" data-act="ref" ${S.busy ? "disabled" : ""}>Змінити</button>` : ""}</div>
     ${ref}${a ? `<div class="side-head"><span class="eyebrow">Якір · ключ #${a.idx}</span></div>
       <div class="anchor-view zoomable paper ${ui.hideLines ? "no-lines" : ""}" data-zoom="anchor" style="aspect-ratio:${S.project.w}/${S.project.h}"><div class="zoom">${anchorLayers(a)}</div></div>` : ""}
-    <div class="grow"></div><div class="action" id="action">${actionView(l)}</div></aside>`;
+    </aside>`;
 }
 
 function actionView(l) {
@@ -657,9 +658,8 @@ function actionView(l) {
       return `<b>Якір: ключ #${a ? a.idx : "–"}</b><p>Якір розфарбовується першим і задає кольори для решти кадрів. Найкраще підходить кадр, де персонаж видно повністю. Щоб змінити якір, виберіть інший кадр.</p>
         <button class="btn primary" data-act="color-anchor" ${dis}>Розфарбувати якір · ~${money(S.est)}</button>`;
     case "approve":
-      return `<b>Якір: ключ #${a.idx}</b><p>Перевірте кольори. Клік по області — змінити колір. Затверджений якір задає кольори для решти кадрів.</p>
-        <div class="row"><button class="btn" data-act="recolor-anchor" ${dis}>Перефарбувати</button>
-        <button class="btn primary" data-act="approve" ${dis}>Затвердити</button></div>`;
+      return `<b>Перевірте якір · ключ #${a.idx}</b><p>Клік по області — змінити колір. Затверджений якір задає кольори для решти кадрів.</p>
+        <button class="btn primary" data-act="approve" ${dis}>Затвердити</button>${recolorLink(dis)}`;
     case "frames":
       return `<b>Кадри за якорем</b><p>Якір #${a.idx} затверджено. ${l.followsN} унікальних кадр(ів) розфарбуються за ним, повтори отримають колір автоматично.</p>
         <button class="btn primary" data-act="follows" ${dis}>Розфарбувати ${l.followsN} кадр(ів) · ~${money(l.followsN * S.estFollow)}</button>${recolorLink(dis)}`;
@@ -668,7 +668,7 @@ function actionView(l) {
         <button class="btn primary" data-act="view" data-view="insert">До вставки</button>${refollowLink(l, dis)}${recolorLink(dis)}`;
     case "done":
       return `<b>Вставлено в TVPaint</b><p>Шар ${esc(l.name)}_color створено під лайном.</p>
-        <button class="btn" data-act="view" data-view="insert">Вставити знову</button>${refollowLink(l, dis)}${recolorLink(dis)}`;
+        <button class="btn primary" data-act="view" data-view="insert">Вставити знову</button>${refollowLink(l, dis)}${recolorLink(dis)}`;
   }
   return "";
 }
