@@ -139,9 +139,16 @@ function render() {
   if (!S) return;
   if (!S.connected) { app.innerHTML = header(false) + connectView() + footer(); bindConnect(); renderFooter(); return; }
   ensureSelection();
+  // a re-render that the user didn't ask for (autosaved strokes, a state push) keeps open menus open;
+  // clicking an action closes them before its own render
+  const openMenus = [...document.querySelectorAll(".menu:not([hidden])")].map((m) => m.id);
   const center = ui.view === "insert" ? insertView() : centerView();
   app.innerHTML = header(true) + `<div class="body">${treeView()}${center}${sideView()}</div>` + footer();
   bindMain();
+  for (const id of openMenus) {
+    const m = document.getElementById(id);
+    if (m) { m.hidden = false; m.previousElementSibling.setAttribute("aria-expanded", "true"); }
+  }
   renderFooter();
 }
 
