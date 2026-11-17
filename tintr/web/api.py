@@ -1,4 +1,5 @@
-"""Python side of the web UI: the object exposed to JS as `window.pywebview.api`.
+"""Python side of the web UI: the object exposed to JS as `window.pywebview.api`
+(or, in browser mode, called over HTTP by server.py at POST /api/<method>).
 
 Long operations (TVPaint, VLM) run on ONE worker thread (TVPaint RPC is not thread-safe) and report
 back through events pushed to JS (`tintr.on({...})`). Quick edits run directly and return the new state.
@@ -6,8 +7,10 @@ back through events pushed to JS (`tintr.on({...})`). Quick edits run directly a
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import threading
 import time
 import traceback
@@ -40,8 +43,9 @@ def _short(name: str) -> str:
 class Api:
     def __init__(self):
         self._cfg = Config.load()
-        self._window = None  # set by app.main after the window exists
-        self._port = 0  # image server port
+        self._window = None  # set by app.main after the window exists (desktop mode)
+        self._remote = False  # browser mode: UI runs in a browser on another machine
+        self._listeners: list = []  # browser mode: event sinks (server-sent events), get the JSON text
         self._log: list[str] = []
         self._busy = ""
         self._progress = {"n": 0, "total": 0, "msg": ""}
@@ -54,10 +58,13 @@ class Api:
 
     # ------------------------------------------------------------------ events → JS
     def _emit(self, kind: str, data) -> None:
+        msg = json.dumps({"type": kind, "data": data}, ensure_ascii=False)
+        for sink in list(self._listeners):
+            sink(msg)
         if not self._window:
             return
         try:
-            self._window.evaluate_js(f"window.tintr && tintr.on({json.dumps({'type': kind, 'data': data}, ensure_ascii=False)})")
+            self._window.evaluate_js(f"window.tintr && tintr.on({msg})")
         except Exception:  # noqa: BLE001 — window closing
             pass
 
@@ -131,7 +138,7 @@ class Api:
             v = p.stat().st_mtime_ns
         except OSError:
             return ""
-        return f"http://127.0.0.1:{self._port}/f?p={quote(str(p))}&v={v}" + (f"&w={w}" if w else "")
+        return f"/f?p={quote(str(p))}&v={v}" + (f"&w={w}" if w else "")
 
     def _allowed_paths(self) -> list[Path]:
         out: list[Path] = []
@@ -366,6 +373,8 @@ class Api:
     def pick_ref(self, uid: str) -> dict:
         if g := self._guard():
             return g
+        if self._remote:
+            return {"ok": False, "error": "У браузерному режимі референс завантажується з цього пристрою."}
         import webview
 
         e = self._entry(uid)
@@ -375,9 +384,26 @@ class Api:
         if not res:
             return {"ok": False}
         path = res[0] if isinstance(res, (list, tuple)) else res
-        e.ref_path = str(path)
         self._cfg.last_refs_dir = str(Path(path).parent)
         self._cfg.save()
+        return self._set_ref(e, Path(path))
+
+    def upload_ref(self, uid: str, name: str, data_b64: str) -> dict:
+        """Browser mode: the reference comes from the viewer's machine; it is kept in <project>_tintr/refs."""
+        if g := self._guard():
+            return g
+        e = self._entry(uid)
+        stem, ext = os.path.splitext(os.path.basename(name or "ref.png"))
+        if ext.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+            return {"ok": False, "error": "Референс має бути PNG, JPG або WEBP."}
+        d = self._pl.manifest.root / "refs"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{re.sub(r'[^A-Za-z0-9._-]+', '_', stem).strip('_') or 'ref'}{ext.lower()}"
+        path.write_bytes(base64.b64decode(data_b64))
+        return self._set_ref(e, path)
+
+    def _set_ref(self, e: M.LayerEntry, path: Path) -> dict:
+        e.ref_path = str(path)
         self._pl.manifest.save()
         if any(k.vlm_mapping for k in e.keys):
             self._on_log("  референс змінено — заливки перемальовано зі збережених відповідей")
@@ -386,6 +412,8 @@ class Api:
 
     def open_folder(self) -> dict:
         m = self._pl.manifest
+        if m and self._remote:
+            return {"ok": False, "error": f"Папка проекту — на компі: {m.root}"}
         if m and m.root.exists():
             os.startfile(m.root)  # noqa: S606
         return {"ok": True}

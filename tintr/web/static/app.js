@@ -1,4 +1,5 @@
-/* Tintr UI. State comes from Python (pywebview js_api); this file only renders it and sends intents. */
+/* Tintr UI. State comes from Python (pywebview js_api); this file only renders it and sends intents.
+   Browser mode (run.py --serve, window.TINTR_REMOTE): the same API over HTTP, events over /events (SSE). */
 "use strict";
 
 let S = null;                       // last state from Python
@@ -10,7 +11,18 @@ const ui = {
   panned: false,                     // last mouse press was a pan drag, not a click
 };
 
-const api = () => window.pywebview.api;
+const REMOTE = !!window.TINTR_REMOTE;
+// browser mode: api().name(...args) → POST /api/name with the args as a JSON list
+const httpApi = new Proxy({}, {
+  get: (_t, name) => async (...args) => {
+    const r = await fetch(`/api/${name}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(args),
+    });
+    if (!r.ok) throw new Error(r.status === 403 ? "Немає доступу: відкрийте посилання з токеном з терміналу." : await r.text());
+    return r.json();
+  },
+});
+const api = () => (REMOTE ? httpApi : window.pywebview.api);
 const $ = (sel) => document.querySelector(sel);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = (v) => "$" + (Number(v) || 0).toFixed(2);
@@ -563,7 +575,7 @@ async function onClick(e) {
     case "mode": ui.mode = b.dataset.mode; closePopover(); render(); break;
     case "rescan": call("connect", null, true); break;
     case "export": call("export"); break;
-    case "ref": call("pick_ref", l.uid); break;
+    case "ref": REMOTE ? uploadRef(l.uid) : call("pick_ref", l.uid); break;
     case "set-anchor": { const m = master(l, curKey()); call("set_anchor", l.uid, m.idx); break; }
     case "color-anchor":
       if (await confirmCost(`Gemini розфарбує якір шару ${l.name}.`, S.est)) call("colorize_anchor", l.uid, false);
@@ -719,8 +731,33 @@ async function openSettings() {
   };
 }
 
+// browser mode: the reference image comes from this device and is stored next to the project
+function uploadRef(uid) {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = ".png,.jpg,.jpeg,.webp";
+  inp.onchange = () => {
+    const f = inp.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => call("upload_ref", uid, f.name, String(rd.result).split(",")[1]);
+    rd.readAsDataURL(f);
+  };
+  inp.click();
+}
+
 // ------------------------------------------------------------------ boot
-window.addEventListener("pywebviewready", async () => {
+async function boot() {
   setState(await api().get_state());
   if (!S.connected && !S.busy) { ui.quietConnect = true; api().connect(null, false); }  // quiet first attempt
-});
+}
+
+if (REMOTE) {
+  let opened = false;
+  const es = new EventSource("/events");
+  es.onmessage = (e) => window.tintr.on(JSON.parse(e.data));
+  // first open boots the UI; a reopen after a dropped connection resyncs (events in between are lost)
+  es.onopen = () => { if (!opened) { opened = true; boot(); } else api().get_state().then(setState); };
+} else {
+  window.addEventListener("pywebviewready", boot);
+}
