@@ -328,12 +328,30 @@ function zoomBar() {
     <button class="btn sm" data-act="zoom" data-z="fit" title="Вписати (0)">Вписати</button></div>`;
 }
 
-// every zoomable view: an element with data-zoom="<name>" holding a .zoom layer that is scaled and moved
+// every zoomable view: an element with data-zoom="<name>" holding a .zoom layer that is scaled and moved.
+// A linked view has no zoom of its own: it mirrors its leader (the side anchor follows the main view), and
+// zooming or dragging it moves the leader.
 const zoomEl = (name) => document.querySelector(`[data-zoom="${name}"]`);
 const zstate = (name) => ui.zooms[name] || (ui.zooms[name] = { s: 1, x: 0, y: 0 });
+const LINKED = { anchor: "main" };
+const followers = (name) => Object.keys(LINKED).filter((f) => LINKED[f] === name);
+
+function linkScale(name) {
+  // leader px per follower px (both views have the frame's aspect ratio)
+  const el = zoomEl(name), lead = zoomEl(LINKED[name]);
+  return el && lead && el.clientWidth ? lead.clientWidth / el.clientWidth : 1;
+}
 
 function applyZoom(name = "main") {
   const el = zoomEl(name), z = el && el.querySelector(".zoom");
+  if (LINKED[name]) {
+    if (!z) return;
+    const L = zoomEl(LINKED[name]) ? zstate(LINKED[name]) : { s: 1, x: 0, y: 0 }, f = linkScale(name);
+    z.style.transform = `translate(${L.x / f}px, ${L.y / f}px) scale(${L.s})`;
+    el.classList.toggle("zoomed", L.s > 1);
+    return;
+  }
+  for (const f of followers(name)) applyZoom(f);
   if (!z) return;
   const Z = zstate(name), w = el.clientWidth, h = el.clientHeight;
   Z.s = Math.min(24, Math.max(1, Z.s));
@@ -341,6 +359,7 @@ function applyZoom(name = "main") {
   Z.y = Math.min(0, Math.max(h - h * Z.s, Z.y));
   z.style.transform = `translate(${Z.x}px, ${Z.y}px) scale(${Z.s})`;
   el.classList.toggle("zoomed", Z.s > 1);
+  for (const f of followers(name)) applyZoom(f);
   if (name === "main") {
     const pct = $("#zoom-pct");
     if (pct) pct.textContent = `${Math.round(Z.s * 100)}%`;
@@ -378,33 +397,39 @@ function bindZoomable(name) {
   const el = zoomEl(name);
   if (!el || el.dataset.zbound) return;
   el.dataset.zbound = "1";
+  const target = LINKED[name] || name;  // a linked view drives its leader
   el.addEventListener("wheel", (e) => {
     e.preventDefault();
     closePopover();
-    zoomTo(name, zstate(name).s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+    let cx = e.clientX, cy = e.clientY;
+    if (target !== name && zoomEl(target)) {  // the same image point in the leader
+      const r = el.getBoundingClientRect(), rl = zoomEl(target).getBoundingClientRect(), f = linkScale(name);
+      cx = rl.left + (cx - r.left) * f; cy = rl.top + (cy - r.top) * f;
+    }
+    zoomTo(target, zstate(target).s * Math.exp(-e.deltaY * 0.0015), cx, cy);
   }, { passive: false });
   el.addEventListener("mousedown", (e) => {
     ui.panned = false;
-    const Z = zstate(name);
+    const Z = zstate(target);
     if (!(e.button === 1 || (e.button === 0 && (name !== "main" || Z.s > 1)))) return;
     e.preventDefault();
-    const x0 = e.clientX, y0 = e.clientY, zx = Z.x, zy = Z.y;
+    const x0 = e.clientX, y0 = e.clientY, zx = Z.x, zy = Z.y, f = target !== name ? linkScale(name) : 1;
     const move = (ev) => {
       if (!ui.panned && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
       ui.panned = true;
       el.classList.add("panning");
-      Z.x = zx + ev.clientX - x0; Z.y = zy + ev.clientY - y0;
-      applyZoom(name);
+      Z.x = zx + (ev.clientX - x0) * f; Z.y = zy + (ev.clientY - y0) * f;
+      applyZoom(target);
     };
     const up = () => { el.classList.remove("panning"); window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   });
   el.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
-  el.addEventListener("dblclick", () => { if (name !== "main") { ui.zooms[name] = { s: 1, x: 0, y: 0 }; applyZoom(name); } });
+  el.addEventListener("dblclick", () => { if (target !== "main") { ui.zooms[target] = { s: 1, x: 0, y: 0 }; applyZoom(target); } });
 }
 
-// ---------- the anchor: under the reference and in the stage on KeyA
+// ---------- the anchor: under the reference (zoom linked to the main view) and in the stage on KeyA
 function anchorOf(l) { const a = l && l.keys.find((x) => x.idx === l.anchorIdx); return a && a.colored ? a : null; }
 
 function anchorLayers(a) { return `<img src="${a.color}" alt=""><img src="${a.key}" alt="">`; }
