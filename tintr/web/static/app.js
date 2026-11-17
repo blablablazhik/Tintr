@@ -325,7 +325,7 @@ function zoomBar() {
     <span id="zoom-pct">${Math.round(zstate("main").s * 100)}%</span>
     <button class="icon-btn" data-act="zoom" data-z="in" title="Збільшити (+)" aria-label="Збільшити">+</button>
     <button class="btn sm" data-act="zoom" data-z="px" title="Піксель у піксель">1:1</button>
-    <button class="btn sm" data-act="zoom" data-z="fit" title="Вписати (0)">Вписати</button></div>`;
+    <button class="btn sm" data-act="zoom" data-z="fit" title="Вписати (F або 0)">Вписати</button></div>`;
 }
 
 // every zoomable view: an element with data-zoom="<name>" holding a .zoom layer that is scaled and moved.
@@ -695,7 +695,7 @@ document.addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "+" || e.key === "=") zoomCmd("in");
   else if (e.key === "-") zoomCmd("out");
-  else if (e.key === "0") zoomCmd("fit");
+  else if (e.key === "0" || e.code === "KeyF") zoomCmd("fit");  // F: any keyboard layout
   else if (e.code === "KeyA") toggleAnchor();  // any keyboard layout
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); stepKey(e.key === "ArrowRight" ? 1 : -1); }
 });
