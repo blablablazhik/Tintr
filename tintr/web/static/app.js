@@ -11,6 +11,8 @@ const ui = {
   panned: false,                     // last mouse press was a pan drag, not a click
   showAnchor: false,                 // the stage shows the anchor instead of the key (KeyA), same zoom
   hideLines: false,                  // coloured frames without the line art on top (KeyL), kept across keys
+  pipette: false,                    // the next click on the reference adds its colour to the palette
+  palNote: "",                       // short note under the palette (pipette result)
 };
 
 const REMOTE = !!window.TINTR_REMOTE;
@@ -498,14 +500,102 @@ function renderLive() {
 }
 setInterval(() => { if (Object.keys(ui.live).length) renderLive(); }, 1000);
 
+// ---------- pipette: a colour from the reference into the layer palette
+const refPixels = { url: "", ctx: null, w: 0, h: 0, loading: null };
+
+function refSampler(url) {
+  // the reference drawn once into an offscreen canvas (same origin, so its pixels are readable)
+  if (refPixels.url === url) return refPixels.loading;
+  refPixels.url = url; refPixels.ctx = null;
+  refPixels.loading = new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0);
+      if (refPixels.url === url) Object.assign(refPixels, { ctx, w: c.width, h: c.height });
+      resolve();
+    };
+    img.onerror = () => resolve();
+    img.src = url;
+  });
+  return refPixels.loading;
+}
+
+function refColorAt(cx, cy) {
+  // client point → pixel of the reference image (object-fit: contain inside the zoomed box) → "#RRGGBB"
+  const img = document.querySelector("#ref img");
+  if (!img || !refPixels.ctx) return null;
+  const r = img.getBoundingClientRect(), s = Math.min(r.width / refPixels.w, r.height / refPixels.h);
+  const x = Math.floor((cx - r.left - (r.width - refPixels.w * s) / 2) / s);
+  const y = Math.floor((cy - r.top - (r.height - refPixels.h * s) / 2) / s);
+  if (x < 0 || y < 0 || x >= refPixels.w || y >= refPixels.h) return null;
+  const d = refPixels.ctx.getImageData(x, y, 1, 1).data;
+  if (d[3] < 128) return null;  // transparent background of the reference
+  return "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function togglePipette(on = !ui.pipette) {
+  const l = curLayer();
+  if (on && !(l && l.refUrl)) on = false;
+  ui.pipette = on;
+  $("#ref")?.classList.toggle("picking", on);
+  $('[data-act="pipette"]')?.classList.toggle("on", on);
+  const prev = $("#pip-preview");
+  if (prev && !on) prev.hidden = true;
+  if (on) refSampler(l.refUrl);
+}
+
+function palNote(text) {
+  ui.palNote = text;
+  const n = $("#pal-note");
+  if (n) n.textContent = text;
+  clearTimeout(palNote.t);
+  palNote.t = setTimeout(() => { ui.palNote = ""; const m = $("#pal-note"); if (m) m.textContent = ""; }, 3500);
+}
+
+function bindPipette() {
+  const ref = $("#ref"), l = curLayer();
+  if (!ref || !l) return;
+  if (ui.pipette) refSampler(l.refUrl);
+  const prev = $("#pip-preview");
+  ref.addEventListener("mousemove", (e) => {
+    if (!ui.pipette) return;
+    const c = refColorAt(e.clientX, e.clientY);
+    prev.hidden = !c;
+    if (c) { prev.style.background = c; prev.style.left = `${e.clientX + 14}px`; prev.style.top = `${e.clientY + 14}px`; }
+  });
+  ref.addEventListener("mouseleave", () => { prev.hidden = true; });
+  ref.addEventListener("click", async (e) => {
+    if (!ui.pipette || ui.panned || S.busy) return;
+    const c = refColorAt(e.clientX, e.clientY);
+    if (!c) return;
+    const keep = e.shiftKey;
+    if (!keep) togglePipette(false);
+    const r = await call("add_palette_color", l.uid, c);
+    if (r.ok) palNote(r.exists ? `Такий колір уже є: ${r.name}` : `Додано ${r.name}`);
+  });
+  const pal = $("#palette");
+  if (pal) pal.addEventListener("contextmenu", async (e) => {
+    const sw = e.target.closest(".extra");
+    if (!sw) return;
+    e.preventDefault();
+    if (!S.busy) await call("remove_palette_color", l.uid, sw.dataset.name);
+  });
+}
+
 // ---------- right panel
 function sideView() {
   const l = curLayer();
   if (!l) return `<aside class="side"></aside>`;
   const a = anchorOf(l);
   const ref = l.refUrl
-    ? `<div class="ref zoomable ${a ? "with-anchor" : ""}" data-zoom="ref"><div class="zoom"><img src="${l.refUrl}" alt="Референс ${esc(l.name)}"></div></div><span class="ref-name">${esc(l.ref)} · ${l.palette.length} кольорів у палітрі</span>
-       <div class="palette">${l.palette.map((p) => `<span title="${p.name}" style="background:${p.hex}"></span>`).join("")}</div>`
+    ? `<div class="ref zoomable ${a ? "with-anchor" : ""} ${ui.pipette ? "picking" : ""}" data-zoom="ref" id="ref"><div class="zoom"><img src="${l.refUrl}" alt="Референс ${esc(l.name)}"></div></div><span class="ref-name">${esc(l.ref)} · ${l.palette.length} кольорів у палітрі</span>
+       <div class="pal-head"><span class="eyebrow">Палітра</span><span class="pal-note" id="pal-note">${esc(ui.palNote)}</span>
+         <button class="link ${ui.pipette ? "on" : ""}" data-act="pipette" ${S.busy ? "disabled" : ""} title="Додати в палітру колір з референса (I). Shift+клік — додати кілька">+ Піпетка</button></div>
+       <div class="palette" id="palette">${l.palette.map((p) => `<span class="${p.extra ? "extra" : ""}" data-name="${p.name}" style="background:${p.hex}"
+         title="${p.name} ${p.hex}${p.extra ? " · додано піпеткою · права кнопка — видалити" : ""}"></span>`).join("")}</div>`
     : `<div class="ref none"><span>Референс не вибрано</span><button class="btn primary" data-act="ref">Оберіть референс</button></div>`;
   return `<aside class="side"><div class="side-head"><span class="eyebrow">Референс · ${esc(l.name)}</span>
     ${l.refUrl ? `<button class="link" data-act="ref" ${S.busy ? "disabled" : ""}>Змінити</button>` : ""}</div>
@@ -614,6 +704,7 @@ function bindMain() {
   if (fr && fr.classList.contains("clickable")) fr.addEventListener("click", onFrameClick);
   for (const img of document.querySelectorAll("#stage img")) img.addEventListener("load", fitFrames, { once: true });
   for (const el of document.querySelectorAll("#app [data-zoom]")) bindZoomable(el.dataset.zoom);
+  bindPipette();
   fitFrames();
   applyAllZooms();
   const sel = document.querySelector(".kf.sel");
@@ -637,9 +728,10 @@ async function onClick(e) {
     case "folder": call("open_folder"); break;
     case "log": toggleLog(); break;
     case "view": ui.view = b.dataset.view; closePopover(); render(); break;
-    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; ui.showAnchor = false; closePopover(); render(); break;
+    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; ui.showAnchor = false; ui.pipette = false; closePopover(); render(); break;
     case "zoom": zoomCmd(b.dataset.z); break;
     case "lines": toggleLines(); break;
+    case "pipette": togglePipette(); break;
     case "key": ui.idx = +b.dataset.idx; ui.showAnchor = false; closePopover(); render(); break;
     case "mode": ui.mode = b.dataset.mode; closePopover(); render(); break;
     case "rescan": call("connect", null, true); break;
@@ -702,7 +794,7 @@ document.addEventListener("mousedown", (e) => {
   if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame")) closePopover();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closePopover(); closeModal(); toggleAnchor(false); return; }
+  if (e.key === "Escape") { closePopover(); closeModal(); toggleAnchor(false); togglePipette(false); return; }
   if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
   if (e.ctrlKey || e.altKey || e.metaKey) return;
   if (e.key === "+" || e.key === "=") zoomCmd("in");
@@ -710,6 +802,7 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "0" || e.code === "KeyF") zoomCmd("fit");  // F: any keyboard layout
   else if (e.code === "KeyA") toggleAnchor();  // any keyboard layout
   else if (e.code === "KeyL") toggleLines();
+  else if (e.code === "KeyI") togglePipette();
   else if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); stepKey(e.key === "ArrowRight" ? 1 : -1); }
 });
 
