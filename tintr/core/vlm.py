@@ -222,16 +222,25 @@ def _on_white(key_rgba: np.ndarray) -> Image.Image:
 MAX_UPSCALE = 3.0
 
 
+LABEL_MARGIN = 90  # px each side of a cropped VLM view, for the callout columns (at ui=1)
+
+
 def view(base: Image.Image, box: tuple[int, int, int, int] | None = None,
-         width: int = VLM_W) -> tuple[Image.Image, float, int, int]:
+         width: int = VLM_W, margin: int = 0) -> tuple[Image.Image, float, float, int]:
     """Crop `base` to `box` (None = whole frame) and scale it for the VLM.
-    Whole frame: `width` wide. Crop: its larger side = `width` (at most MAX_UPSCALE x).
-    Returns (image, scale, x0, y0)."""
+    Whole frame: `width` wide. Crop: its larger side = `width` (at most MAX_UPSCALE x), plus `margin`
+    white px left and right (room for callout numbers). Returns (image, scale, x0, y0) with
+    image x = (frame x - x0) * scale."""
     x0, y0 = (box[0], box[1]) if box else (0, 0)
     im = base.crop(box) if box else base
     W, H = im.size
     s = min(width / max(W, H), MAX_UPSCALE) if box else width / W
-    return im.resize((max(1, round(W * s)), max(1, round(H * s))), Image.LANCZOS), s, x0, y0
+    im = im.resize((max(1, round(W * s)), max(1, round(H * s))), Image.LANCZOS)
+    if margin:
+        pad = Image.new("RGB", (im.width + 2 * margin, im.height), "white")
+        pad.paste(im, (margin, 0))
+        im, x0 = pad, x0 - margin / s
+    return im, s, x0, y0
 
 
 def _overlaps(b, placed, gap: float = 2) -> bool:
@@ -243,7 +252,7 @@ def _ccw(a, b, c) -> float:
 
 
 def _seg_cross(p1, p2, q1, q2) -> bool:
-    """Segments p1-p2 and q1-q2 cross (touching at a shared end does not count)."""
+    """Segments p1-p2 and q1-q2 cross (touching at an end does not count)."""
     d1, d2, d3, d4 = _ccw(q1, q2, p1), _ccw(q1, q2, p2), _ccw(p1, p2, q1), _ccw(p1, p2, q2)
     return (d1 * d2 < 0) and (d3 * d4 < 0)
 
@@ -251,7 +260,7 @@ def _seg_cross(p1, p2, q1, q2) -> bool:
 def _seg_hits_box(p1, p2, b, gap: float = 0) -> bool:
     """Segment p1-p2 passes through rectangle b (x0, y0, x1, y1) grown by `gap`."""
     x0, y0, x1, y1 = b[0] - gap, b[1] - gap, b[2] + gap, b[3] + gap
-    inside = lambda p: x0 <= p[0] <= x1 and y0 <= p[1] <= y1  # noqa: E731
+    inside = lambda q: x0 <= q[0] <= x1 and y0 <= q[1] <= y1  # noqa: E731
     if inside(p1) or inside(p2):
         return True
     c = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
@@ -270,102 +279,162 @@ def mark_colors(n: int) -> np.ndarray:
     return out
 
 
+def _background_ids(regions: Regions) -> np.ndarray:
+    """Bool per region id: True for the outer background (regions touching the frame edge)."""
+    reg = regions.reg
+    edge = np.concatenate([reg[0], reg[-1], reg[:, 0], reg[:, -1]])
+    bg = np.zeros(regions.n + 1, bool)
+    bg[0] = True
+    bg[np.unique(edge[edge > 0])] = True
+    return bg
+
+
 def _tint(base: Image.Image, regions: Regions, cols: np.ndarray, alpha: float = 0.38) -> Image.Image:
     """Tint every region except the outer background with its identification colour (Set-of-Mark)."""
     reg = regions.reg
-    edge = np.concatenate([reg[0], reg[-1], reg[:, 0], reg[:, -1]])
-    lut = np.ones(regions.n + 1, bool)
-    lut[0] = False
-    lut[np.unique(edge[edge > 0])] = False  # regions touching the frame edge = background: keep plain
-    m = lut[reg]
+    m = (~_background_ids(regions))[reg]
     a = np.array(base, np.float32)
     a[m] = a[m] * (1 - alpha) + cols[reg[m]].astype(np.float32) * alpha
     return Image.fromarray(a.round().astype(np.uint8), "RGB")
 
 
+def _callout_slots(regions: Regions, bg: np.ndarray, big: list[int], s: float, ox: float, oy: float, size,
+                   hwm: float, hhm: float, gap: float, taken: list, inner_cost: float) -> tuple[np.ndarray, np.ndarray]:
+    """Free spots for callout numbers: on the background just outside the character's silhouette, or
+    (at an extra cost, for regions deep inside the figure) well inside a big region that has its own
+    number. Thinned to one per label-sized cell, never on another number.
+    Returns (n, 2) label centres in image px and the extra cost of each spot."""
+    W, H = size
+    x1, y1 = ox + W / s, oy + H / s
+    rim = Image.fromarray(regions.reg.astype(np.int32), "I").crop((round(ox), round(oy), round(x1), round(y1)))
+    reg = np.array(rim.resize((W, H), Image.NEAREST))
+    fg = ~bg[reg] | (reg == 0)  # character + its lines
+    rr = float(np.hypot(hwm, hhm) + gap)
+    d_out = ndi.distance_transform_edt(~fg)
+    out_band = (d_out >= rr) & (d_out <= rr + 4 * hhm)  # background right next to the silhouette
+    d_in = ndi.distance_transform_edt(np.isin(reg, big))  # big regions, away from their lines
+    inner = d_in >= rr + gap
+    cw, ch = 2 * hwm + gap, 2 * hhm + gap
+    pts, extra = [], []
+    for mask, add in ((out_band, 0.0), (inner, inner_cost)):
+        ys, xs = np.nonzero(mask)
+        if not len(xs):
+            continue
+        cell = (ys // ch).astype(np.int64) * 100000 + (xs // cw).astype(np.int64)
+        _, first = np.unique(cell, return_index=True)
+        pts += list(zip(xs[first], ys[first]))
+        extra += [add] * len(first)
+    kept: list[tuple] = []
+    out, cost = [], []
+    for (x, y), add in zip(pts, extra):
+        b = (x - hwm, y - hhm, x + hwm, y + hhm)
+        if b[0] < 0 or b[1] < 0 or b[2] > W or b[3] > H or _overlaps(b, kept, gap) or _overlaps(b, taken, 2 * hhm + gap):
+            continue
+        kept.append(b)
+        out.append((x, y))
+        cost.append(add)
+    return np.array(out, float).reshape(-1, 2), np.array(cost, float)
+
+
 def annotate(base: Image.Image, regions: Regions, width: int = VLM_W,
-             box: tuple[int, int, int, int] | None = None, ui: float = 1.0) -> Image.Image:
-    """Set-of-Mark view of `base` (full-res RGB) cropped to `box` and scaled (see view()): every region is
-    tinted with its own identification colour and numbered in a box of the same colour. A number that
-    doesn't fit inside its region is moved aside with a leader line + dot of that colour; leaders never
-    cross each other or other numbers. `ui` scales labels (a bigger image that should look the same when
-    fitted on screen, e.g. the zoomable preview)."""
+             box: tuple[int, int, int, int] | None = None, ui: float = 1.0, margin: int = 0) -> Image.Image:
+    """Set-of-Mark view of `base` (full-res RGB), cropped to `box` and scaled (see view()).
+
+    Every region is tinted with its own identification colour. A region big enough for its number gets
+    it inside, in a box of that colour. Smaller regions get a callout: the number stands in a column left
+    or right of the drawing, on the background, joined by a line of the region colour to a dot inside
+    the region. Numbers are assigned to column slots by minimum total line length, which guarantees that
+    callout lines never cross. `ui` scales labels (a bigger image that should look the same when fitted
+    on screen, e.g. the zoomable preview); `margin` adds white columns for the callouts (cropped views)."""
     cols = mark_colors(regions.n)
-    im, s, ox, oy = view(_tint(base, regions, cols), box, width)
+    bg = _background_ids(regions)
+    im, s, ox, oy = view(_tint(base, regions, cols), box, width, margin)
     W, H = im.size
     d = ImageDraw.Draw(im)
-    boxes: list[tuple] = []  # label boxes and leader dots already placed
-    segs: list[tuple] = []  # leader segments already placed
-    labels = []  # (i, font, centre, box, anchor point or None)
     gap = 2 * ui
 
-    def free(b, seg, strict: bool) -> bool:
-        if b[0] < 0 or b[1] < 0 or b[2] > W or b[3] > H or _overlaps(b, boxes, gap):
-            return False
-        if not strict:
-            return True
-        if any(_seg_hits_box(q1, q2, b, gap) for q1, q2 in segs):
-            return False
-        if seg and (any(_seg_cross(seg[0], seg[1], q1, q2) for q1, q2 in segs)
-                    or any(_seg_hits_box(seg[0], seg[1], o, 0) for o in boxes)):
-            return False
-        return True
-
-    # small regions first: they have the fewest good spots
-    for i, (x, y, r) in sorted(regions.points.items(), key=lambda t: t[1][2]):
+    labels = []  # (i, font, (cx, cy), box, (px, py) dot or None)
+    boxes: list[tuple] = []
+    callouts = []  # (i, font, hw, hh, px, py)
+    for i, (x, y, r) in sorted(regions.points.items(), key=lambda t: -t[1][2]):  # big first: inside
         f = _font(int(max(14 * ui, min(34 * ui, r * s * 0.9))))
         px, py, rs = (x - ox) * s, (y - oy) * s, r * s
         bb = d.textbbox((0, 0), str(i), font=f, anchor="mm")
         hw, hh = (bb[2] - bb[0]) / 2 + 3 * ui, (bb[3] - bb[1]) / 2 + 2 * ui
-        fits = rs >= 0.8 * max(hw, hh)
-        dot = (px - 4 * ui, py - 4 * ui, px + 4 * ui, py + 4 * ui)
-        spot = None
-        for strict in (True, False):  # relaxed pass only if no crossing-free spot exists nearby
-            start = 0.0 if fits else rs + max(hw, hh) + 4 * ui
-            for k in range(48):
-                dist = start + k * 6 * ui
-                for a in ([0.0] if dist == 0 else [j * np.pi / 8 for j in range(16)]):
-                    cx, cy = px + dist * np.cos(a), py - dist * np.sin(a)
-                    b = (cx - hw, cy - hh, cx + hw, cy + hh)
-                    leader = np.hypot(cx - px, cy - py) > max(rs, 4 * ui)
-                    # the leader runs from the dot to the nearest point of the box edge
-                    ex, ey = min(max(px, b[0]), b[2]), min(max(py, b[1]), b[3])
-                    seg = ((px, py), (ex, ey)) if leader else None
-                    if leader and (_overlaps(dot, boxes, 0) and strict):
-                        continue
-                    if free(b, seg, strict):
-                        spot = (cx, cy, b, seg)
-                        break
-                if spot:
+        b = (px - hw, py - hh, px + hw, py + hh)
+        if (rs >= 0.8 * max(hw, hh) or bg[i]) and not _overlaps(b, boxes, gap):
+            boxes.append(b)
+            labels.append((i, f, (px, py), b, None))
+        else:
+            fc = _font(int(14 * ui))  # callout numbers: uniform small size
+            bb = d.textbbox((0, 0), str(i), font=fc, anchor="mm")
+            callouts.append((i, fc, (bb[2] - bb[0]) / 2 + 3 * ui, (bb[3] - bb[1]) / 2 + 2 * ui, px, py))
+
+    if callouts:
+        hwm = max(c[2] for c in callouts)
+        hhm = max(c[3] for c in callouts)
+        big = [lab[0] for lab in labels if not bg[lab[0]]]
+        slots, slot_extra = _callout_slots(regions, bg, big, s, ox, oy, (W, H), hwm, hhm, gap, boxes, 160 * ui)
+        from scipy.optimize import linear_sum_assignment
+        got: dict[int, int] = {}
+        if len(slots) >= len(callouts):
+            P = np.array([(c[4], c[5]) for c in callouts])
+            cost = np.hypot(slots[None, :, 0] - P[:, 0, None], slots[None, :, 1] - P[:, 1, None]) + slot_extra[None, :]
+            # a line through another number or another callout's dot is confusing: heavy penalty
+            near = 0.5 * float(np.hypot(W, H))
+            dots = [(x - 5 * ui, y - 5 * ui, x + 5 * ui, y + 5 * ui) for x, y in P]
+            for n, (px, py) in enumerate(P):
+                for j in np.flatnonzero(cost[n] < near):
+                    sx, sy = slots[j]
+                    obst = boxes + [o for k, o in enumerate(dots) if k != n]
+                    hits = sum(_seg_hits_box((px, py), (sx, sy), o, gap) for o in obst)
+                    cost[n, j] += hits * near
+                cost[n, cost[n] >= near] += 10 * near
+            ri, si = linear_sum_assignment(cost)
+            got = dict(zip(ri.tolist(), si.tolist()))
+            # untangle: two crossing lines swap their slots (shorter in total), until none cross
+            for _ in range(200):
+                swapped = False
+                keys = list(got)
+                for a_ in range(len(keys)):
+                    for b_ in range(a_ + 1, len(keys)):
+                        u, v = keys[a_], keys[b_]
+                        if _seg_cross(P[u], slots[got[u]], P[v], slots[got[v]]):
+                            got[u], got[v] = got[v], got[u]
+                            swapped = True
+                if not swapped:
                     break
-            if spot:
-                break
-        if spot is None:  # crowded everywhere: put it on the region anyway
-            spot = (px, py, (px - hw, py - hh, px + hw, py + hh), None)
-        cx, cy, b, seg = spot
-        boxes.append(b)
-        if seg:
-            boxes.append(dot)
-            segs.append(seg)
-        labels.append((i, f, (cx, cy), b, seg))
+        for n, (i, fc, hw, hh, px, py) in enumerate(callouts):
+            if n not in got:  # no free slot left: number on the region itself
+                labels.append((i, fc, (px, py), (px - hw, py - hh, px + hw, py + hh), None))
+                continue
+            cx, cy = (float(v) for v in slots[got[n]])
+            b = (cx - hw, cy - hh, cx + hw, cy + hh)
+            # the line ends at the box edge facing the region
+            end = (min(max(px, b[0]), b[2]), min(max(py, b[1]), b[3]))
+            labels.append((i, fc, (cx, cy), b, (px, py), end))
+
     lw = max(1, round(ui))
-    for i, _, _, _, seg in labels:
-        if seg:
-            c = tuple(int(v) for v in cols[i])
-            d.line(seg, fill=(0, 0, 0), width=round(4 * ui))
-            d.line(seg, fill=c, width=max(2, round(2 * ui)))
-            (qx, qy), rd = seg[0], 4 * ui
-            d.ellipse((qx - rd, qy - rd, qx + rd, qy + rd), fill=c, outline=(0, 0, 0), width=lw)
-    for i, f, (cx, cy), b, _ in labels:
+    for lab in labels:  # callout lines under all number boxes
+        if lab[4] is None:
+            continue
+        i, (px, py), end = lab[0], lab[4], lab[5]
+        c = tuple(int(v) for v in cols[i])
+        d.line(((px, py), end), fill=(0, 0, 0), width=max(2, round(3 * ui)))
+        d.line(((px, py), end), fill=c, width=max(1, round(1.5 * ui)))
+        rd = 3.5 * ui
+        d.ellipse((px - rd, py - rd, px + rd, py + rd), fill=c, outline=(0, 0, 0), width=lw)
+    for lab in labels:
+        i, f, (cx, cy), b = lab[:4]
         c = cols[i].astype(float)
-        ink = (0, 0, 0) if c @ (0.299, 0.587, 0.114) > 140 else (255, 255, 255)  # readable on the box colour
+        inkc = (0, 0, 0) if c @ (0.299, 0.587, 0.114) > 140 else (255, 255, 255)  # readable on the box colour
         d.rectangle(b, fill=tuple(int(v) for v in c), outline=(0, 0, 0), width=lw)
-        d.text((cx, cy), str(i), font=f, fill=ink, anchor="mm")
+        d.text((cx, cy), str(i), font=f, fill=inkc, anchor="mm")
     return im
 
 
 PREVIEW_W = 3072  # numbered preview in the UI: sharp when zoomed in, same look as the VLM image when fitted
-PREVIEW_VER = "2"  # bump when the look of the marks changes: older previews are redrawn on connect
+PREVIEW_VER = "3"  # bump when the look of the marks changes: older previews are redrawn on connect
 
 
 def save_preview(im: Image.Image, path: Path) -> None:
@@ -635,8 +704,8 @@ class VLMColorizer:
         (status or (lambda _s: None))("завантаження")
         clean = _on_white(key_rgba)
         box = lines_box(key_rgba)  # the VLM sees the drawing cropped and enlarged, not the whole frame
-        ann = annotate(clean, regions, box=box)
-        urls = self._upload_all([(view(clean, box)[0], "clean.jpg"), (ann, "regions.jpg"),
+        ann = annotate(clean, regions, box=box, margin=LABEL_MARGIN)
+        urls = self._upload_all([(view(clean, box, margin=LABEL_MARGIN)[0], "clean.jpg"), (ann, "regions.jpg"),
                                  *self._ref_items(ref_path, pal)], label)
         return self._ask(PROMPT_ANCHOR % regions.n, urls, label, status)
 
@@ -646,16 +715,16 @@ class VLMColorizer:
         (status or (lambda _s: None))("завантаження")
         clean = _on_white(key_rgba)
         box = lines_box(key_rgba)
-        ann = annotate(clean, regions, box=box)
+        ann = annotate(clean, regions, box=box, margin=LABEL_MARGIN)
         a_clean = _on_white(anchor_rgba)
         a_box = lines_box(anchor_rgba)
-        a_ann = annotate(a_clean, anchor_regions, box=a_box)
+        a_ann = annotate(a_clean, anchor_regions, box=a_box, margin=LABEL_MARGIN)
         a_col = Image.new("RGBA", a_clean.size, (230, 230, 230, 255))
         a_col.alpha_composite(anchor_fill)
         a_col.alpha_composite(Image.fromarray(anchor_rgba, "RGBA"))
-        a_col = view(a_col.convert("RGB"), a_box)[0]
+        a_col = view(a_col.convert("RGB"), a_box, margin=LABEL_MARGIN)[0]
         urls = self._upload_all([(a_ann, "anchor_regions.jpg"), (a_col, "anchor_color.jpg"),
-                                 (view(clean, box)[0], "clean.jpg"), (ann, "regions.jpg"),
+                                 (view(clean, box, margin=LABEL_MARGIN)[0], "clean.jpg"), (ann, "regions.jpg"),
                                  *self._ref_items(ref_path, pal)], label)
         prompt = PROMPT_FOLLOW % (describe_mapping(anchor_mapping), regions.n)
         return self._ask(prompt, urls, label, status)
