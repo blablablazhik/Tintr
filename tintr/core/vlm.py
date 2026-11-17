@@ -44,35 +44,143 @@ BG = "BG"
 
 
 # ------------------------------------------------------------------ regions
+# v1: size threshold relative to the whole frame (small faces / eyes were dropped and bled colour)
+# v2: multi-scale gap closing (trapped-ball style), absolute size threshold, fragments merged by contact
+REGIONS_VER = 2
+
+
 @dataclass
 class Regions:
     reg: np.ndarray  # int32 map: 0 = line / gap / unnumbered, 1..n = numbered regions (by size)
     n: int
     points: dict[int, tuple[int, int, float]]  # label position (x, y, radius) in full-res pixels
+    ver: int = REGIONS_VER  # algorithm version the map was made with (old maps keep old VLM answers valid)
 
 
-def find_regions(key_rgba: np.ndarray, gap_close_px: int = 3, min_share: float = 0.0004) -> Regions:
+def lines_box(key_rgba: np.ndarray, pad: float = 0.04) -> tuple[int, int, int, int] | None:
+    """Bounding box (x0, y0, x1, y1) of the drawing plus `pad` (share of its larger side, or pixels if >= 1)."""
     lines = key_rgba[..., 3] > 32
+    ys, xs = np.flatnonzero(lines.any(1)), np.flatnonzero(lines.any(0))
+    if not len(ys):
+        return None
+    H, W = lines.shape
+    p = int(pad if pad >= 1 else pad * max(xs[-1] - xs[0], ys[-1] - ys[0]))
+    return max(0, xs[0] - p), max(0, ys[0] - p), min(W, xs[-1] + 1 + p), min(H, ys[-1] + 1 + p)
+
+
+def _disk(r: int) -> np.ndarray:
+    return np.hypot(*np.ogrid[-r:r + 1, -r:r + 1]) <= r
+
+
+def _regrow(lab: np.ndarray, free: np.ndarray, iters: int) -> None:
+    """Grow labels into unlabelled free pixels, never across lines (geodesic dilation)."""
+    for _ in range(iters):
+        g = ndi.grey_dilation(lab, size=3)
+        m = (lab == 0) & free & (g > 0)
+        if not m.any():
+            return
+        lab[m] = g[m]
+
+
+def _contacts(lab: np.ndarray) -> dict[int, dict[int, int]]:
+    """Direct (4-neighbour) contact length between differently labelled pixels: {a: {b: n}}."""
+    out: dict[int, dict[int, int]] = {}
+    for a, b in ((lab[:, :-1], lab[:, 1:]), (lab[:-1, :], lab[1:, :])):
+        m = (a != b) & (a > 0) & (b > 0)
+        if not m.any():
+            continue
+        pa, pb = a[m].astype(np.int64), b[m].astype(np.int64)
+        u, c = np.unique(np.concatenate([pa << 31 | pb, pb << 31 | pa]), return_counts=True)
+        for k, n in zip(u.tolist(), c.tolist()):
+            d = out.setdefault(k >> 31, {})
+            d[k & 0x7FFFFFFF] = d.get(k & 0x7FFFFFFF, 0) + n
+    return out
+
+
+def find_regions(key_rgba: np.ndarray, gap_close_px: int = 3, min_px: int | None = None) -> Regions:
+    """Paint-bucket regions of a line-art key.
+
+    Multi-scale gap closing, like trapped-ball fill (BasicPBC / linefiller): a big "ball" first so small
+    gaps in the lines don't leak, then smaller ones so narrow areas the big ball can't enter (eye whites,
+    lens rims, strands of hair) still get their own region. After each pass the regions are regrown up to
+    the lines. Later fragments that touch an earlier region directly were cut off only by the closing
+    and are merged back into it. Pieces below `min_px` (scales with resolution) join a region they touch,
+    else stay unnumbered (fill() gives them the nearest colour)."""
+    lines_full = key_rgba[..., 3] > 32
+    H, W = lines_full.shape
+    if min_px is None:
+        min_px = max(10, round(30 * (max(H, W) / 1920) ** 2))
     r = gap_close_px
-    disk = np.hypot(*np.ogrid[-r:r + 1, -r:r + 1]) <= r
-    closed = ndi.binary_dilation(lines, structure=disk) if r > 0 else lines
-    lab, n = ndi.label(~closed)
+    x0, y0, x1, y1 = lines_box(key_rgba, pad=r + 2) or (0, 0, W, H)
+    lines = lines_full[y0:y1, x0:x1]
+    free = ~lines
+    lab = np.zeros(lines.shape, np.int32)
+    stage = [0]  # pass index of every label (index = label)
+    n = 0
+    for si, rr in enumerate(sorted({r, r // 2, 0}, reverse=True)):
+        barrier = ndi.binary_dilation(lines, structure=_disk(rr)) if rr > 0 else lines
+        l2, k = ndi.label(free & (lab == 0) & ~barrier)
+        if k:
+            lab[l2 > 0] = l2[l2 > 0] + n
+            n += k
+            stage += [si] * k
+        _regrow(lab, free, rr + 1)
     if n == 0:
-        return Regions(np.zeros(lines.shape, np.int32), 0, {})
-    sizes = ndi.sum(np.ones_like(lab), lab, index=np.arange(1, n + 1))
-    big = [i + 1 for i in np.argsort(-sizes) if sizes[i] >= min_share * lab.size]
+        return Regions(np.zeros((H, W), np.int32), 0, {})
+
+    # fragments of later passes → the earlier region they touch most
+    stage_a = np.array(stage)
+    parent = list(range(n + 1))
+
+    def root(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    con = _contacts(lab)
+    for f in sorted((i for i in range(1, n + 1) if stage_a[i] > 0), key=lambda i: stage_a[i]):
+        nb = {j: c for j, c in con.get(f, {}).items() if stage_a[j] < stage_a[f]}
+        if nb:
+            parent[root(f)] = root(max(nb, key=nb.get))
+    lab = np.array([root(i) for i in range(n + 1)], np.int32)[lab]
+
+    # tiny pieces → a region they touch directly, else unnumbered
+    sizes = np.bincount(lab.ravel(), minlength=n + 1).astype(np.int64)
+    small = [i for i in range(1, n + 1) if 0 < sizes[i] < min_px]
+    if small:
+        con = _contacts(lab)
+        merge = np.arange(n + 1, dtype=np.int32)
+        for f in small:
+            nb = {j: c for j, c in con.get(f, {}).items() if sizes[j] >= min_px}
+            merge[f] = max(nb, key=nb.get) if nb else 0
+        lab = merge[lab]
+        sizes = np.bincount(lab.ravel(), minlength=n + 1).astype(np.int64)
+
+    # everything outside the box is the outer background: same label as the box border
+    border = np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]])
+    border = border[border > 0]
+    outer = int(np.bincount(border).argmax()) if len(border) else 0
+    if outer:
+        sizes[outer] += H * W - lab.size
+    sizes[0] = 0
+    big = [i for i in np.argsort(-sizes, kind="stable") if i > 0 and sizes[i] >= min_px]
     remap = np.zeros(n + 1, np.int32)
     for new, old in enumerate(big, 1):
         remap[old] = new
-    reg = remap[lab]
+    rc = remap[lab]
+    reg = np.zeros((H, W), np.int32)
+    if outer and remap[outer]:
+        reg[:] = remap[outer]
+    reg[y0:y1, x0:x1] = rc
     pts = {}
-    for i, sl in enumerate(ndi.find_objects(reg), 1):
+    for i, sl in enumerate(ndi.find_objects(rc), 1):
         if sl is None:
             continue
-        m = reg[sl] == i
+        m = rc[sl] == i
         dt = ndi.distance_transform_edt(np.pad(m, 1))[1:-1, 1:-1]
         y, x = np.unravel_index(dt.argmax(), dt.shape)
-        pts[i] = (int(x + sl[1].start), int(y + sl[0].start), float(dt.max()))
+        pts[i] = (int(x + sl[1].start + x0), int(y + sl[0].start + y0), float(dt.max()))
     return Regions(reg, len(big), pts)
 
 
@@ -80,7 +188,7 @@ def save_regions(regions: Regions, path: Path, tag: str) -> None:
     """Cache a region map on disk (find_regions takes seconds on a 3K frame). `tag` = key pixel hash."""
     pts = np.array([(i, x, y, r) for i, (x, y, r) in regions.points.items()], np.float64).reshape(-1, 4)
     tmp = path.with_name(path.stem + ".tmp.npz")
-    np.savez_compressed(tmp, reg=regions.reg.astype(np.int32), n=regions.n, pts=pts, tag=tag)
+    np.savez_compressed(tmp, reg=regions.reg.astype(np.int32), n=regions.n, pts=pts, tag=tag, ver=regions.ver)
     tmp.replace(path)
 
 
@@ -90,7 +198,8 @@ def load_regions(path: Path, tag: str) -> Regions | None:
             if str(d["tag"]) != tag:
                 return None
             pts = {int(i): (int(x), int(y), float(r)) for i, x, y, r in d["pts"]}
-            return Regions(d["reg"], int(d["n"]), pts)
+            ver = int(d["ver"]) if "ver" in d.files else 1
+            return Regions(d["reg"], int(d["n"]), pts, ver)
     except Exception:  # noqa: BLE001 — missing / stale / corrupt cache
         return None
 
@@ -110,19 +219,84 @@ def _on_white(key_rgba: np.ndarray) -> Image.Image:
     return im.convert("RGB")
 
 
-def annotate(base: Image.Image, regions: Regions, width: int = VLM_W) -> Image.Image:
-    """Draw region numbers (yellow boxes) on `base` (full-res RGB), scaled to `width`."""
-    W, H = base.size
-    s = width / W
-    im = base.resize((width, int(H * s)), Image.LANCZOS)
+MAX_UPSCALE = 3.0
+
+
+def view(base: Image.Image, box: tuple[int, int, int, int] | None = None,
+         width: int = VLM_W) -> tuple[Image.Image, float, int, int]:
+    """Crop `base` to `box` (None = whole frame) and scale it for the VLM.
+    Whole frame: `width` wide. Crop: its larger side = `width` (at most MAX_UPSCALE x).
+    Returns (image, scale, x0, y0)."""
+    x0, y0 = (box[0], box[1]) if box else (0, 0)
+    im = base.crop(box) if box else base
+    W, H = im.size
+    s = min(width / max(W, H), MAX_UPSCALE) if box else width / W
+    return im.resize((max(1, round(W * s)), max(1, round(H * s))), Image.LANCZOS), s, x0, y0
+
+
+def _overlaps(b, placed, gap: int = 2) -> bool:
+    return any(b[0] < p[2] + gap and b[2] + gap > p[0] and b[1] < p[3] + gap and b[3] + gap > p[1] for p in placed)
+
+
+def annotate(base: Image.Image, regions: Regions, width: int = VLM_W,
+             box: tuple[int, int, int, int] | None = None, ui: float = 1.0) -> Image.Image:
+    """Draw region numbers (yellow boxes) on `base` (full-res RGB), cropped to `box` and scaled (see view()).
+    A number that doesn't fit inside its region, or would cover another one, is moved aside and
+    pointed at its region with a leader line and a dot. `ui` scales labels (a bigger image that should
+    look the same when fitted on screen, e.g. the zoomable preview)."""
+    im, s, ox, oy = view(base, box, width)
+    W, H = im.size
     d = ImageDraw.Draw(im)
-    for i, (x, y, r) in regions.points.items():
-        f = _font(int(max(16, min(34, r * s * 0.9))))
-        cx, cy = x * s, y * s
-        bb = d.textbbox((cx, cy), str(i), font=f, anchor="mm")
-        d.rectangle((bb[0] - 3, bb[1] - 2, bb[2] + 3, bb[3] + 2), fill=(255, 235, 0), outline=(0, 0, 0))
+    placed: list[tuple] = []  # label boxes and dots already on the image
+    labels = []  # (i, font, centre, anchor point or None)
+    # small regions first: they have the fewest good spots
+    for i, (x, y, r) in sorted(regions.points.items(), key=lambda t: t[1][2]):
+        f = _font(int(max(14 * ui, min(34 * ui, r * s * 0.9))))
+        px, py, rs = (x - ox) * s, (y - oy) * s, r * s
+        bb = d.textbbox((0, 0), str(i), font=f, anchor="mm")
+        hw, hh = (bb[2] - bb[0]) / 2 + 3 * ui, (bb[3] - bb[1]) / 2 + 2 * ui
+        fits = rs >= 0.8 * max(hw, hh)
+        spot = None
+        start = 0.0 if fits else rs + max(hw, hh) + 4 * ui
+        for k in range(40):
+            dist = start + k * 6 * ui
+            angles = [0.0] if dist == 0 else [a * np.pi / 6 for a in range(12)]
+            for a in angles:
+                cx, cy = px + dist * np.cos(a), py - dist * np.sin(a)
+                b = (cx - hw, cy - hh, cx + hw, cy + hh)
+                if b[0] < 0 or b[1] < 0 or b[2] > W or b[3] > H or _overlaps(b, placed, round(2 * ui)):
+                    continue
+                spot = (cx, cy, b)
+                break
+            if spot:
+                break
+        if spot is None:  # crowded everywhere: put it on the region anyway
+            spot = (px, py, (px - hw, py - hh, px + hw, py + hh))
+        cx, cy, b = spot
+        leader = np.hypot(cx - px, cy - py) > max(rs, 4 * ui)
+        placed.append(b)
+        if leader:
+            placed.append((px - 4 * ui, py - 4 * ui, px + 4 * ui, py + 4 * ui))
+        labels.append((i, f, (cx, cy), b, (px, py) if leader else None))
+    for _, _, (cx, cy), _, pt in labels:
+        if pt:
+            d.line((pt, (cx, cy)), fill=(0, 0, 0), width=round(3 * ui))
+            d.line((pt, (cx, cy)), fill=(255, 235, 0), width=max(1, round(ui)))
+            rd = 3 * ui
+            d.ellipse((pt[0] - rd, pt[1] - rd, pt[0] + rd, pt[1] + rd), fill=(255, 235, 0), outline=(0, 0, 0), width=max(1, round(ui)))
+    for i, f, (cx, cy), b, _ in labels:
+        d.rectangle(b, fill=(255, 235, 0), outline=(0, 0, 0), width=max(1, round(ui)))
         d.text((cx, cy), str(i), font=f, fill=(0, 0, 0), anchor="mm")
     return im
+
+
+PREVIEW_W = 3072  # numbered preview in the UI: sharp when zoomed in, same look as the VLM image when fitted
+
+
+def preview(base: Image.Image, regions: Regions) -> Image.Image:
+    """Whole-frame numbered regions for the UI (click coordinates map to the frame)."""
+    w = max(VLM_W, min(PREVIEW_W, base.width))
+    return annotate(base, regions, width=w, ui=w / VLM_W)
 
 
 def palette_card(pal: np.ndarray) -> Image.Image:
@@ -364,8 +538,9 @@ class VLMColorizer:
                      status=None):
         (status or (lambda _s: None))("завантаження")
         clean = _on_white(key_rgba)
-        ann = annotate(clean, regions)
-        urls = self._upload_all([(clean.resize(ann.size, Image.LANCZOS), "clean.jpg"), (ann, "regions.jpg"),
+        box = lines_box(key_rgba)  # the VLM sees the drawing cropped and enlarged, not the whole frame
+        ann = annotate(clean, regions, box=box)
+        urls = self._upload_all([(view(clean, box)[0], "clean.jpg"), (ann, "regions.jpg"),
                                  *self._ref_items(ref_path, pal)], label)
         return self._ask(PROMPT_ANCHOR % regions.n, urls, label, status)
 
@@ -374,15 +549,17 @@ class VLMColorizer:
                      label: str = "", status=None):
         (status or (lambda _s: None))("завантаження")
         clean = _on_white(key_rgba)
-        ann = annotate(clean, regions)
+        box = lines_box(key_rgba)
+        ann = annotate(clean, regions, box=box)
         a_clean = _on_white(anchor_rgba)
-        a_ann = annotate(a_clean, anchor_regions)
+        a_box = lines_box(anchor_rgba)
+        a_ann = annotate(a_clean, anchor_regions, box=a_box)
         a_col = Image.new("RGBA", a_clean.size, (230, 230, 230, 255))
         a_col.alpha_composite(anchor_fill)
         a_col.alpha_composite(Image.fromarray(anchor_rgba, "RGBA"))
-        a_col = a_col.convert("RGB").resize(a_ann.size, Image.LANCZOS)
+        a_col = view(a_col.convert("RGB"), a_box)[0]
         urls = self._upload_all([(a_ann, "anchor_regions.jpg"), (a_col, "anchor_color.jpg"),
-                                 (clean.resize(ann.size, Image.LANCZOS), "clean.jpg"), (ann, "regions.jpg"),
+                                 (view(clean, box)[0], "clean.jpg"), (ann, "regions.jpg"),
                                  *self._ref_items(ref_path, pal)], label)
         prompt = PROMPT_FOLLOW % (describe_mapping(anchor_mapping), regions.n)
         return self._ask(prompt, urls, label, status)

@@ -6,6 +6,8 @@ const ui = {
   uid: null, idx: null, mode: null, view: "main",
   log: [], logOpen: false, live: {},
   insertSel: null, save: null, port: null, connectError: "",
+  zoom: { s: 1, x: 0, y: 0 },        // preview zoom (1 = fit) and pan in px; kept across keys/modes
+  panned: false,                     // last mouse press was a pan drag, not a click
 };
 
 const api = () => window.pywebview.api;
@@ -202,7 +204,19 @@ function treeView() {
   const empty = scanned ? "Шарів з тегом _cc- не знайдено." : "Проект ще не скановано.";
   return `<aside class="tree"><div class="tree-head"><span class="eyebrow">Кліпи</span>
     <button class="link" data-act="rescan" ${S.busy ? "disabled" : ""} title="Знайти шари з тегом _cc- у всіх кліпах">${scanned ? "Пересканувати" : "Сканувати"}</button></div>
-    ${clips || `<div style="padding:0 20px;color:var(--muted)">${empty}</div>`}</aside>`;
+    <div class="tree-clips">${clips || `<div style="padding:0 20px;color:var(--muted)">${empty}</div>`}</div>
+    ${clips ? allClipsView() : ""}</aside>`;
+}
+
+function allClipsView() {
+  // one parallel run over every clip; layers without a reference are skipped
+  const a = S.allAnchors || 0, f = S.allFollows || 0, busy = !!S.busy;
+  const wait = S.awaiting ? `<small class="tone-accent">${S.awaiting} якір(ів) чекають затвердження</small>` : "";
+  return `<div class="tree-all"><span class="eyebrow">Усі кліпи · паралельно</span>
+    <button class="btn sm" data-act="all-anchors" ${a && !busy ? "" : "disabled"} title="Якорі всіх шарів, у яких є референс і якір ще не розфарбовано">
+      Розфарбувати всі якорі${a ? ` · ${a}` : ""}</button>
+    <button class="btn sm" data-act="all-follows" ${f && !busy ? "" : "disabled"} title="Ключові кадри всіх шарів із затвердженим якорем">
+      Розфарбувати всі кадри${f ? ` · ${f}` : ""}</button>${wait}</div>`;
 }
 
 function layerState(l) {
@@ -256,7 +270,7 @@ function stageView(l, k) {
   }
   const anchor = l.keys.find((x) => x.idx === l.anchorIdx);
   const sideBySide = ui.mode === "color" && anchor && anchor.colored && k.idx !== anchor.idx && master(l, k).idx !== anchor.idx;
-  const big = frameHtml(k, ui.mode, true);
+  const big = frameHtml(k, ui.mode, true) + zoomBar();
   if (!sideBySide) {
     const hint = ui.mode === "regions" ? "Це бачить Gemini. Клік по області — змінити колір."
       : ui.mode === "color" ? "Клік по області — змінити колір." : "";
@@ -273,7 +287,7 @@ function frameHtml(k, mode, main, extra = "") {
   else if (mode === "regions") imgs = `<img src="${k.regions}" alt="">`;
   else imgs = `<img src="${k.key}" alt="">`;
   const click = main && mode !== "line" ? "clickable" : "";
-  return `<div class="frame ${paper} ${click} ${extra}" ${main ? 'id="frame"' : ""} data-w="${W}" data-h="${H}" style="aspect-ratio:${W}/${H}">${imgs}</div>`;
+  return `<div class="frame ${paper} ${click} ${extra}" ${main ? 'id="frame"' : ""} data-w="${W}" data-h="${H}" style="aspect-ratio:${W}/${H}"><div class="zoom" ${main ? 'id="zoom"' : ""}>${imgs}</div></div>`;
 }
 
 function fitFrames() {
@@ -289,6 +303,80 @@ function fitFrames() {
     const s = Math.min(maxW / W, maxH / H);
     f.style.width = `${Math.max(40, Math.floor(W * s))}px`;
   }
+  applyZoom();
+}
+
+// ---------- zoom / pan of the main preview (line, regions, colour)
+function zoomBar() {
+  return `<div class="zoombar" role="group" aria-label="Масштаб">
+    <button class="icon-btn" data-act="zoom" data-z="out" title="Зменшити (−)" aria-label="Зменшити">−</button>
+    <span id="zoom-pct">${Math.round(ui.zoom.s * 100)}%</span>
+    <button class="icon-btn" data-act="zoom" data-z="in" title="Збільшити (+)" aria-label="Збільшити">+</button>
+    <button class="btn sm" data-act="zoom" data-z="px" title="Піксель у піксель">1:1</button>
+    <button class="btn sm" data-act="zoom" data-z="fit" title="Вписати (0)">Вписати</button></div>`;
+}
+
+function applyZoom() {
+  const fr = $("#frame"), z = $("#zoom");
+  if (!fr || !z) return;
+  const Z = ui.zoom, w = fr.clientWidth, h = fr.clientHeight;
+  Z.s = Math.min(24, Math.max(1, Z.s));
+  Z.x = Math.min(0, Math.max(w - w * Z.s, Z.x));
+  Z.y = Math.min(0, Math.max(h - h * Z.s, Z.y));
+  z.style.transform = `translate(${Z.x}px, ${Z.y}px) scale(${Z.s})`;
+  fr.classList.toggle("zoomed", Z.s > 1);
+  const pct = $("#zoom-pct");
+  if (pct) pct.textContent = `${Math.round(Z.s * 100)}%`;
+}
+
+function zoomTo(s, cx, cy) {
+  // keep the image point under (cx, cy) (client px; default: frame centre) in place
+  const fr = $("#frame");
+  if (!fr) return;
+  const r = fr.getBoundingClientRect(), Z = ui.zoom;
+  if (cx == null) { cx = r.left + r.width / 2; cy = r.top + r.height / 2; }
+  s = Math.min(24, Math.max(1, s));
+  const lx = (cx - r.left - Z.x) / Z.s, ly = (cy - r.top - Z.y) / Z.s;
+  Z.x = cx - r.left - lx * s; Z.y = cy - r.top - ly * s; Z.s = s;
+  applyZoom();
+}
+
+function zoomCmd(cmd) {
+  const fr = $("#frame");
+  if (!fr) return;
+  closePopover();
+  if (cmd === "in") zoomTo(ui.zoom.s * 1.5);
+  else if (cmd === "out") zoomTo(ui.zoom.s / 1.5);
+  else if (cmd === "px") zoomTo(S.project.w / fr.clientWidth);
+  else { ui.zoom = { s: 1, x: 0, y: 0 }; applyZoom(); }
+}
+
+function bindZoom() {
+  const fr = $("#frame");
+  if (!fr) return;
+  fr.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    closePopover();
+    zoomTo(ui.zoom.s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+  }, { passive: false });
+  fr.addEventListener("mousedown", (e) => {
+    // left drag pans when zoomed in (a click without moving still picks a region); middle drag always
+    ui.panned = false;
+    if (!(e.button === 1 || (e.button === 0 && ui.zoom.s > 1))) return;
+    e.preventDefault();
+    const x0 = e.clientX, y0 = e.clientY, zx = ui.zoom.x, zy = ui.zoom.y;
+    const move = (ev) => {
+      if (!ui.panned && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
+      ui.panned = true;
+      fr.classList.add("panning");
+      ui.zoom.x = zx + ev.clientX - x0; ui.zoom.y = zy + ev.clientY - y0;
+      applyZoom();
+    };
+    const up = () => { fr.classList.remove("panning"); window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  });
+  fr.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
 }
 
 function groupsView(l) {
@@ -438,6 +526,7 @@ function bindMain() {
   const fr = $("#frame");
   if (fr && fr.classList.contains("clickable")) fr.addEventListener("click", onFrameClick);
   for (const img of document.querySelectorAll("#stage img")) img.addEventListener("load", fitFrames, { once: true });
+  bindZoom();
   fitFrames();
   for (const inp of document.querySelectorAll('[data-act="isel"]')) inp.addEventListener("change", () => {
     if (inp.checked) ui.insertSel.add(inp.dataset.uid); else ui.insertSel.delete(inp.dataset.uid);
@@ -458,7 +547,8 @@ async function onClick(e) {
     case "folder": call("open_folder"); break;
     case "log": toggleLog(); break;
     case "view": ui.view = b.dataset.view; closePopover(); render(); break;
-    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; closePopover(); render(); break;
+    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zoom = { s: 1, x: 0, y: 0 }; closePopover(); render(); break;
+    case "zoom": zoomCmd(b.dataset.z); break;
     case "key": ui.idx = +b.dataset.idx; closePopover(); render(); break;
     case "mode": ui.mode = b.dataset.mode; closePopover(); render(); break;
     case "rescan": call("connect", null, true); break;
@@ -472,12 +562,15 @@ async function onClick(e) {
       if (await confirmCost(`Gemini розфарбує якір шару ${l.name} заново. Поточні кольори якоря буде замінено.`, S.est)) call("colorize_anchor", l.uid, true);
       break;
     case "approve": call("approve_anchor", l.uid); break;
-    case "follows": {
-      const n = layers().reduce((s, x) => s + (x.stage === "frames" ? x.followsN : 0), 0);
-      const names = layers().filter((x) => x.stage === "frames").map((x) => x.name).join(", ");
-      if (await confirmCost(`Gemini розфарбує ${n} кадр(ів) за затвердженими якорями (${names}).`, n * S.estFollow)) call("colorize_follows");
+    case "follows":
+      if (await confirmCost(`Буде розфарбовано ${l.followsN} кадр(ів) шару ${l.name} за затвердженим якорем.`, l.followsN * S.estFollow)) call("colorize_follows", l.uid);
       break;
-    }
+    case "all-anchors":
+      if (await confirmCost(`Gemini паралельно розфарбує якорі ${S.allAnchors} шар(ів) у всіх кліпах. Шари без референсу буде пропущено.`, S.allAnchors * S.est)) call("colorize_all_anchors");
+      break;
+    case "all-follows":
+      if (await confirmCost(`Паралельно буде розфарбовано ${S.allFollows} кадр(ів) усіх шарів із затвердженими якорями.`, S.allFollows * S.estFollow)) call("colorize_follows", null);
+      break;
     case "stop": call("stop"); break;
     case "inject": call("inject", [...ui.insertSel], ui.save); break;
   }
@@ -485,9 +578,10 @@ async function onClick(e) {
 
 // ---------- region popover
 async function onFrameClick(e) {
+  if (ui.panned) { ui.panned = false; return; }  // the press was a pan drag
   if (S.busy) return;
   const l = curLayer(), k = curKey();
-  const fr = e.currentTarget, r = fr.getBoundingClientRect();
+  const r = $("#zoom").getBoundingClientRect();  // zoomed/panned image box
   const x = ((e.clientX - r.left) / r.width) * S.project.w;
   const y = ((e.clientY - r.top) / r.height) * S.project.h;
   const res = await api().region_at(l.uid, k.idx, x, y);
@@ -512,7 +606,13 @@ function closePopover() { $("#popover").hidden = true; }
 document.addEventListener("mousedown", (e) => {
   if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame")) closePopover();
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closePopover(); closeModal(); } });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closePopover(); closeModal(); return; }
+  if (e.target.closest("input, textarea") || !$("#modal").hidden) return;
+  if (e.key === "+" || e.key === "=") zoomCmd("in");
+  else if (e.key === "-") zoomCmd("out");
+  else if (e.key === "0") zoomCmd("fit");
+});
 
 // ---------- log drawer
 function toggleLog() {

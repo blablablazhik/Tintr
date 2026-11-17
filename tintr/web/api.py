@@ -189,9 +189,10 @@ class Api:
                 "anchor": bool(a and k.idx == a.idx), "status": k.status, "error": k.error, "cost": k.cost,
                 "colored": colored, "followed": bool(k.vlm_mapping) and (k.dup_of is not None or k.idx == (a.idx if a else None)
                                                                      or k.vlm_anchor_ver == e.anchor_version),
-                "key": f(k.key_file, 1600), "keyThumb": f(k.key_file, 280),
-                "regions": f(k.regions_file, 1600),
-                "color": f(k.color_file, 1600) if colored else "", "colorThumb": f(k.color_file, 280) if colored else "",
+                # main view: full resolution (zoomable); thumbnails are downscaled by the server
+                "key": f(k.key_file), "keyThumb": f(k.key_file, 280),
+                "regions": f(k.regions_file),
+                "color": f(k.color_file) if colored else "", "colorThumb": f(k.color_file, 280) if colored else "",
                 "live": self._live.get(f"{e.uid}:{k.idx}"),
             })
         n_follow = sum(1 for le, _ in self._pl.pending_follows() if le.uid == e.uid) if stage == "frames" else 0
@@ -235,6 +236,10 @@ class Api:
             c = clips.setdefault(e.clip_id, {"id": e.clip_id, "pos": e.clip_pos + 1, "name": e.clip_name, "layers": []})
             c["layers"].append(self._layer(e))
         st["clips"] = sorted(clips.values(), key=lambda c: c["pos"])
+        # "all clips" buttons: only layers that have a reference
+        st["allAnchors"] = sum(1 for e, _ in self._pl.pending_anchors() if self._pl.has_ref(e))
+        st["allFollows"] = sum(1 for e, _ in self._pl.pending_follows() if self._pl.has_ref(e))
+        st["awaiting"] = len(self._pl.awaiting_approval())
         return st
 
     # ------------------------------------------------------------------ recent projects
@@ -283,10 +288,18 @@ class Api:
             return {"ok": False, "error": "Задайте fal.ai API key у налаштуваннях."}
         return self._task("Розфарбовування якоря", lambda: self._pl.colorize_anchors(uid, force))
 
-    def colorize_follows(self) -> dict:
+    def colorize_all_anchors(self) -> dict:
+        """Anchors of every layer in every clip that has a reference and no coloured anchor, in parallel."""
         if not get_api_key():
             return {"ok": False, "error": "Задайте fal.ai API key у налаштуваннях."}
-        return self._task("Розфарбовування кадрів за якорем", self._pl.colorize_follows)
+        return self._task("Розфарбовування всіх якорів", lambda: self._pl.colorize_anchors(None, False))
+
+    def colorize_follows(self, uid: str | None = None) -> dict:
+        """Keys after the approved anchor: of one layer (uid) or of every clip (None), in parallel."""
+        if not get_api_key():
+            return {"ok": False, "error": "Задайте fal.ai API key у налаштуваннях."}
+        name = "Розфарбовування кадрів за якорем" if uid else "Розфарбовування всіх кадрів"
+        return self._task(name, lambda: self._pl.colorize_follows(uid or None))
 
     def inject(self, uids: list[str], save: str) -> dict:
         if save in ("new", "overwrite"):

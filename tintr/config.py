@@ -25,7 +25,7 @@ def app_dir() -> Path:
 @dataclass
 class Config:
     rpc_port: int = 3000
-    concurrency: int = 4
+    concurrency: int = 10  # parallel VLM requests (anchors and keys of all clips share one pool)
     # anchor: the model decides every part alone, so a strong reasoning model pays off (one call per layer)
     vlm_model: str = "google/gemini-3.8-flash"
     vlm_est_cost: float = 0.05  # rough $ per anchor for the estimate; real cost comes from fal usage

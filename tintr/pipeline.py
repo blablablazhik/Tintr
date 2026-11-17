@@ -113,8 +113,27 @@ class Pipeline:
             keys.append(k)
         e.keys = keys
 
+    def _refresh_previews(self) -> None:
+        """Redraw numbered previews made at an older (lower) resolution, so they stay sharp when zoomed."""
+        m = self.manifest
+        for e in self.manifest.layers.values():
+            for k in e.masters():
+                if not (k.key_file and k.regions_file and m.abs(e, k.key_file).exists()):
+                    continue
+                p = m.abs(e, k.regions_file)
+                try:
+                    with Image.open(p) as im:
+                        w = im.width
+                    with Image.open(m.abs(e, k.key_file)) as im:
+                        want = max(V.VLM_W, min(V.PREVIEW_W, im.width))
+                except OSError:
+                    continue
+                if w != want:
+                    V.preview(V._on_white(self._key_rgba(e, k)), self._regions(e, k)).save(p)
+
     def _restore_outputs(self) -> None:
         """Re-create colour files from saved VLM answers if they're missing (free, local)."""
+        self._refresh_previews()
         for e in self.manifest.layers.values():
             if not (e.ref_path and Path(e.ref_path).exists()):
                 continue
@@ -200,27 +219,48 @@ class Pipeline:
         self.log(f"  regions ready for {len(jobs)} key(s) in {time.time() - t:.1f}s")
 
     def _prepare_one(self, e: M.LayerEntry, k: M.KeyFrame) -> None:
-        regs = self._regions(e, k)
+        regs = self._regions(e, k, current=not k.vlm_mapping)  # not coloured yet: newest segmentation
         base = Path(k.key_file).stem
         rel = f"regions/{base}_regions.png"
         if k.regions_file != rel or not self.manifest.abs(e, rel).exists():
-            V.annotate(V._on_white(self._key_rgba(e, k)), regs).save(self.manifest.sub(e, "regions") / f"{base}_regions.png")
+            V.preview(V._on_white(self._key_rgba(e, k)), regs).save(self.manifest.sub(e, "regions") / f"{base}_regions.png")
             k.regions_file = rel
 
     # --------------------------------------------------------------- regions
     def _key_rgba(self, e: M.LayerEntry, k: M.KeyFrame) -> np.ndarray:
         return np.array(Image.open(self.manifest.abs(e, k.key_file)).convert("RGBA"))
 
-    def _regions(self, e: M.LayerEntry, k: M.KeyFrame) -> V.Regions:
+    def _regions(self, e: M.LayerEntry, k: M.KeyFrame, current: bool = False) -> V.Regions:
+        """Region map of a key. A map made by an older find_regions is kept while the key's saved VLM
+        answer refers to its numbers; `current=True` (key without an answer) rebuilds it."""
         ck = (e.uid, k.idx, k.hash)
-        if ck not in self._reg_cache:
-            path = self.manifest.sub(e, "regions") / f"{Path(k.key_file).stem}.npz"
-            regs = V.load_regions(path, k.hash)
-            if regs is None:
-                regs = V.find_regions(self._key_rgba(e, k))
-                V.save_regions(regs, path, k.hash)
-            self._reg_cache[ck] = regs
-        return self._reg_cache[ck]
+        regs = self._reg_cache.get(ck)
+        if regs is None:
+            regs = V.load_regions(self._regions_path(e, k), k.hash)
+        if regs is None or (current and regs.ver != V.REGIONS_VER):
+            self._commit_regions(e, k, V.find_regions(self._key_rgba(e, k)), redraw=regs is not None)
+            return self._reg_cache[ck]
+        self._reg_cache[ck] = regs
+        return regs
+
+    def _regions_path(self, e: M.LayerEntry, k: M.KeyFrame) -> Path:
+        return self.manifest.sub(e, "regions") / f"{Path(k.key_file).stem}.npz"
+
+    def _regions_for_colouring(self, e: M.LayerEntry, k: M.KeyFrame) -> tuple[V.Regions, bool]:
+        """Newest-version regions for a paid colouring, NOT saved yet: the key's old answer refers to the
+        old numbers until the new answer arrives (a failed/stopped request must leave both untouched)."""
+        regs = self._regions(e, k)
+        if regs.ver == V.REGIONS_VER:
+            return regs, False
+        return V.find_regions(self._key_rgba(e, k)), True
+
+    def _commit_regions(self, e: M.LayerEntry, k: M.KeyFrame, regs: V.Regions, redraw: bool) -> None:
+        V.save_regions(regs, self._regions_path(e, k), k.hash)
+        self._reg_cache[(e.uid, k.idx, k.hash)] = regs
+        if redraw:  # the numbered preview shows the old numbers: redraw it
+            base = Path(k.key_file).stem
+            V.preview(V._on_white(self._key_rgba(e, k)), regs).save(self.manifest.sub(e, "regions") / f"{base}_regions.png")
+            k.regions_file = f"regions/{base}_regions.png"
 
     def _write_outputs(self, e: M.LayerEntry, k: M.KeyFrame) -> None:
         """Numbered-regions preview + flat colour fill from k.vlm_mapping."""
@@ -229,7 +269,7 @@ class Pipeline:
         regs = self._regions(e, k)
         base = Path(k.key_file).stem
         if not (k.regions_file and m.abs(e, k.regions_file).exists()):
-            V.annotate(V._on_white(self._key_rgba(e, k)), regs).save(m.sub(e, "regions") / f"{base}_regions.png")
+            V.preview(V._on_white(self._key_rgba(e, k)), regs).save(m.sub(e, "regions") / f"{base}_regions.png")
             k.regions_file = f"regions/{base}_regions.png"
         V.fill(regs, k.vlm_mapping, pal).save(m.sub(e, "color") / f"{base}_color.png")
         k.color_file = f"color/{base}_color.png"
@@ -254,10 +294,12 @@ class Pipeline:
                 out.append((e, a))
         return out
 
-    def pending_follows(self) -> list[tuple[M.LayerEntry, M.KeyFrame]]:
+    def pending_follows(self, only_uid: str | None = None) -> list[tuple[M.LayerEntry, M.KeyFrame]]:
         """Non-anchor keys of layers whose anchor is approved and that weren't coloured with that anchor."""
         out = []
         for e in self.entries():
+            if only_uid and e.uid != only_uid:
+                continue
             a = self.anchor_key(e)
             if not (a and a.vlm_mapping and e.anchor_approved):
                 continue
@@ -278,15 +320,23 @@ class Pipeline:
                 out.append(e)
         return out
 
-    def _check_refs(self, entries) -> None:
-        missing = [e.layer_name for e in entries if not (e.ref_path and Path(e.ref_path).exists())]
-        if missing:
+    @staticmethod
+    def has_ref(e: M.LayerEntry) -> bool:
+        return bool(e.ref_path and Path(e.ref_path).exists())
+
+    def _check_refs(self, todo: list, skip: bool) -> list:
+        """One layer: a missing reference is an error. All layers: those layers are skipped (logged)."""
+        missing = sorted({e.layer_name for e, _ in todo if not self.has_ref(e)})
+        if missing and not skip:
             raise ValueError("Character reference missing for: " + ", ".join(missing))
+        if missing:
+            self.log("  пропущено (немає референсу): " + ", ".join(missing))
+        return [(e, k) for e, k in todo if self.has_ref(e)]
 
     def colorize_anchors(self, only_uid: str | None = None, force: bool = False) -> None:
-        """Colour only the anchor key (of one layer, or of every layer that has none yet)."""
-        todo = self.pending_anchors(only_uid, force)
-        self._check_refs({e.uid: e for e, _ in todo}.values())
+        """Colour only the anchor key: of one layer, or (only_uid=None) of every layer in every clip that
+        has none yet — all requests run in parallel (cfg.concurrency)."""
+        todo = self._check_refs(self.pending_anchors(only_uid, force), skip=only_uid is None)
         if not todo:
             self.log("Якорі вже розфарбовано.")
             return
@@ -295,10 +345,10 @@ class Pipeline:
                 e.anchor_approved = False
         self._colorize(todo)
 
-    def colorize_follows(self) -> None:
-        """Colour the remaining keys of every layer with an approved anchor."""
-        todo = self.pending_follows()
-        self._check_refs({e.uid: e for e, _ in todo}.values())
+    def colorize_follows(self, only_uid: str | None = None) -> None:
+        """Colour the remaining keys of one layer, or (only_uid=None) of every layer with an approved anchor
+        in every clip — all requests run in parallel (cfg.concurrency)."""
+        todo = self._check_refs(self.pending_follows(only_uid), skip=only_uid is None)
         if not todo:
             waiting = [e.layer_name for e in self.awaiting_approval()]
             self.log(("Чекають затвердження якоря: " + ", ".join(waiting)) if waiting else "Нічого розфарбовувати.")
@@ -331,7 +381,7 @@ class Pipeline:
             status = lambda s, _u=e.uid, _i=k.idx: self.key_status(_u, _i, s)  # noqa: E731
             status("підготовка")
             pal = reference_palette(Path(e.ref_path))
-            regs = self._regions(e, k)
+            regs, fresh = self._regions_for_colouring(e, k)  # recolouring anyway: newest segmentation
             rgba = self._key_rgba(e, k)
             try:
                 if k.idx == e.anchor_idx:
@@ -348,7 +398,9 @@ class Pipeline:
                     k.vlm_anchor_ver = e.anchor_version
             finally:
                 status("")
-            k.vlm_mapping = {str(r): mapping.get(str(r), {"part": "?", "color": V.BG}) for r in range(1, regs.n + 1)}
+            if fresh:  # the answer refers to the new numbers: only now replace the saved region map
+                self._commit_regions(e, k, regs, redraw=True)
+            k.vlm_mapping ={str(r): mapping.get(str(r), {"part": "?", "color": V.BG}) for r in range(1, regs.n + 1)}
             k.cost = self.cost.record(project=str(self.project.path), clip=e.clip_name, layer=e.layer_name,
                                       frame=k.start, model=model, usd=cost)
             self._write_outputs(e, k)
