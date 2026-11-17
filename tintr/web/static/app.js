@@ -346,30 +346,12 @@ function zoomBar(mode) {
     <button class="btn sm" data-act="zoom" data-z="fit" title="Вписати (F або 0)">Вписати</button></div>`;
 }
 
-// every zoomable view: an element with data-zoom="<name>" holding a .zoom layer that is scaled and moved.
-// A linked view has no zoom of its own: it mirrors its leader (the side anchor follows the main view), and
-// zooming or dragging it moves the leader.
+// every zoomable view: an element with data-zoom="<name>" holding a .zoom layer that is scaled and moved
 const zoomEl = (name) => document.querySelector(`[data-zoom="${name}"]`);
 const zstate = (name) => ui.zooms[name] || (ui.zooms[name] = { s: 1, x: 0, y: 0 });
-const LINKED = { anchor: "main" };
-const followers = (name) => Object.keys(LINKED).filter((f) => LINKED[f] === name);
-
-function linkScale(name) {
-  // leader px per follower px (both views have the frame's aspect ratio)
-  const el = zoomEl(name), lead = zoomEl(LINKED[name]);
-  return el && lead && el.clientWidth ? lead.clientWidth / el.clientWidth : 1;
-}
 
 function applyZoom(name = "main") {
   const el = zoomEl(name), z = el && el.querySelector(".zoom");
-  if (LINKED[name]) {
-    if (!z) return;
-    const L = zoomEl(LINKED[name]) ? zstate(LINKED[name]) : { s: 1, x: 0, y: 0 }, f = linkScale(name);
-    z.style.transform = `translate(${L.x / f}px, ${L.y / f}px) scale(${L.s})`;
-    el.classList.toggle("zoomed", L.s > 1);
-    return;
-  }
-  for (const f of followers(name)) applyZoom(f);
   if (!z) return;
   const Z = zstate(name), w = el.clientWidth, h = el.clientHeight;
   Z.s = Math.min(24, Math.max(1, Z.s));
@@ -377,7 +359,6 @@ function applyZoom(name = "main") {
   Z.y = Math.min(0, Math.max(h - h * Z.s, Z.y));
   z.style.transform = `translate(${Z.x}px, ${Z.y}px) scale(${Z.s})`;
   el.classList.toggle("zoomed", Z.s > 1);
-  for (const f of followers(name)) applyZoom(f);
   if (name === stageZoom()) {
     const pct = $("#zoom-pct");
     if (pct) pct.textContent = `${Math.round(Z.s * 100)}%`;
@@ -417,48 +398,40 @@ function bindZoomable(name) {
   const el = zoomEl(name);
   if (!el || el.dataset.zbound) return;
   el.dataset.zbound = "1";
-  const target = LINKED[name] || name;  // a linked view drives its leader
   el.addEventListener("wheel", (e) => {
     e.preventDefault();
     closePopover();
-    let cx = e.clientX, cy = e.clientY;
-    if (target !== name && zoomEl(target)) {  // the same image point in the leader
-      const r = el.getBoundingClientRect(), rl = zoomEl(target).getBoundingClientRect(), f = linkScale(name);
-      cx = rl.left + (cx - r.left) * f; cy = rl.top + (cy - r.top) * f;
-    }
-    zoomTo(target, zstate(target).s * Math.exp(-e.deltaY * 0.0015), cx, cy);
+    zoomTo(name, zstate(name).s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
   }, { passive: false });
   el.addEventListener("mousedown", (e) => {
     ui.panned = false;
-    const Z = zstate(target);
+    const Z = zstate(name);
     const leftPans = name !== "main" || ui.space || (Z.s > 1 && !drawing());
     if (!(e.button === 1 || (e.button === 0 && leftPans))) return;
     e.preventDefault();
-    const x0 = e.clientX, y0 = e.clientY, zx = Z.x, zy = Z.y, f = target !== name ? linkScale(name) : 1;
+    const x0 = e.clientX, y0 = e.clientY, zx = Z.x, zy = Z.y;
     const move = (ev) => {
       if (!ui.panned && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 4) return;
       ui.panned = true;
       el.classList.add("panning");
-      Z.x = zx + (ev.clientX - x0) * f; Z.y = zy + (ev.clientY - y0) * f;
-      applyZoom(target);
+      Z.x = zx + (ev.clientX - x0); Z.y = zy + (ev.clientY - y0);
+      applyZoom(name);
     };
     const up = () => { el.classList.remove("panning"); window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
   });
   el.addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
-  el.addEventListener("dblclick", () => { if (target !== "main") { ui.zooms[target] = { s: 1, x: 0, y: 0 }; applyZoom(target); } });
+  el.addEventListener("dblclick", () => { if (name !== "main") { ui.zooms[name] = { s: 1, x: 0, y: 0 }; applyZoom(name); } });
 }
 
-// ---------- the anchor: under the reference (zoom linked to the main view) and in the stage on KeyA
+// ---------- the anchor in the stage (KeyA) and the reference in the stage (KeyR)
 function anchorOf(l) { const a = l && l.keys.find((x) => x.idx === l.anchorIdx); return a && a.colored ? a : null; }
-
-function anchorLayers(a) { return `<img src="${a.color}" alt=""><img class="lines" src="${a.key}" alt="">`; }
 
 function toggleLines() {
   // a class switch instead of a re-render: the zoom and pan stay exactly where they are
   ui.hideLines = !ui.hideLines;
-  for (const el of document.querySelectorAll(".frame.paper, .anchor-view")) el.classList.toggle("no-lines", ui.hideLines);
+  for (const el of document.querySelectorAll(".frame.paper")) el.classList.toggle("no-lines", ui.hideLines);
   const b = $("#lines-btn");
   if (b) { b.classList.toggle("on", !ui.hideLines); b.setAttribute("aria-pressed", String(!ui.hideLines)); }
 }
@@ -623,20 +596,18 @@ function bindRefPick(ref, l) {
 function sideView() {
   const l = curLayer();
   if (!l) return `<aside class="side"></aside>`;
-  const a = anchorOf(l);
   const ref = l.refUrl
-    ? `<div class="ref ref-pick zoomable ${a ? "with-anchor" : ""} ${ui.pipette ? "picking" : ""}" data-zoom="ref" id="ref"><div class="zoom"><img src="${l.refUrl}" alt="Референс ${esc(l.name)}"></div></div><span class="ref-name">${esc(l.ref)} · ${l.palette.length} кольорів у палітрі</span>
-       <div class="pal-head"><span class="eyebrow">Палітра</span><span class="pal-note" id="pal-note">${esc(ui.palNote)}</span>
-         <button class="link ${ui.pipette ? "on" : ""}" data-act="pipette" ${S.busy ? "disabled" : ""} title="Додати в палітру колір з референса (I). Shift+клік — додати кілька">+ Піпетка</button></div>
+    ? `<div class="ref ref-pick zoomable ${ui.pipette ? "picking" : ""}" data-zoom="ref" id="ref"><div class="zoom"><img src="${l.refUrl}" alt="Референс ${esc(l.name)}"></div></div>
+       <span class="ref-name">${esc(l.ref)} · <kbd>R</kbd> на весь кадр</span>
+       <div class="pal-head"><span class="eyebrow">Палітра · ${l.palette.length}</span><span class="pal-note" id="pal-note">${esc(ui.palNote)}</span></div>
        <div class="palette" id="palette">${l.palette.map((p) => `<span class="${p.extra ? "extra" : ""}" data-name="${p.name}" style="background:${p.hex}"
-         title="${p.name} ${p.hex}${p.extra ? " · додано піпеткою · права кнопка — видалити" : ""}"></span>`).join("")}</div>`
+         title="${p.name} ${p.hex}${p.extra ? " · додано піпеткою · права кнопка — видалити" : ""}"></span>`).join("")}<button class="pal-add ${ui.pipette ? "on" : ""}" data-act="pipette" ${S.busy ? "disabled" : ""}
+         title="Додати колір з референса (I): клік по референсу. Shift+клік — кілька" aria-label="Додати колір з референса">+</button></div>`
     : `<div class="ref none"><span>Референс не вибрано</span><button class="btn primary" data-act="ref">Оберіть референс</button></div>`;
   return `<aside class="side"><div class="action" id="action">${actionView(l)}</div>
     <div class="side-head"><span class="eyebrow">Референс · ${esc(l.name)}</span>
     ${l.refUrl ? `<button class="link" data-act="ref" ${S.busy ? "disabled" : ""}>Змінити</button>` : ""}</div>
-    ${ref}${a ? `<div class="side-head"><span class="eyebrow">Якір · ключ #${a.idx}</span></div>
-      <div class="anchor-view zoomable paper ${ui.hideLines ? "no-lines" : ""}" data-zoom="anchor" style="aspect-ratio:${S.project.w}/${S.project.h}"><div class="zoom">${anchorLayers(a)}</div></div>` : ""}
-    </aside>`;
+    ${ref}</aside>`;
 }
 
 function actionView(l) {
