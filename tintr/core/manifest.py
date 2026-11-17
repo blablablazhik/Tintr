@@ -65,7 +65,12 @@ class LayerEntry:
     anchor_version: int = 0
     anchor_approved_mapping: dict = field(default_factory=dict)
     missing: bool = False  # cached layer not found in TVPaint any more (rescan needed)
-    extra_colors: list = field(default_factory=list)  # "#RRGGBB" added with the pipette, after the ref palette
+    extra_colors: list = field(default_factory=list)  # "#RRGGBB" added by the user, after the ref palette
+    # the reference with its parts labelled by the VLM: [{"name", "color", "x", "y"}] in reference pixels,
+    # the drawn image (relative to the manifest root) and the reference mtime it was made from
+    ref_labels: list = field(default_factory=list)
+    ref_labeled_file: str = ""
+    ref_labels_mtime: float = 0.0
     keys: list[KeyFrame] = field(default_factory=list)
 
     @property

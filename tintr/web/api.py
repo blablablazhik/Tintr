@@ -217,6 +217,9 @@ class Api:
             "done": sum(1 for k in keys if k["colored"]), "total": len(keys),
             "unique": len(e.masters()), "anchorIdx": a.idx if a else None, "anchorApproved": e.anchor_approved,
             "ref": Path(e.ref_path).name if e.ref_path else "", "refUrl": self._url(e.ref_path, 900),
+            # the reference with the parts labelled (side panel; the stage view R shows the plain one)
+            "refLabeledUrl": self._url(labeled, 900) if (labeled := self._pl.labeled_ref(e)) else "",
+            "refLabelsN": len(e.ref_labels) if labeled else 0,
             "palette": pal, "swatch": self._swatch(pal),
             "followsN": n_follow, "keys": keys,
             "keysN": sum(1 for k in e.masters() if k.key_file and not (a and k.idx == a.idx)),
@@ -302,6 +305,20 @@ class Api:
         if not get_api_key():
             return {"ok": False, "error": "Задайте fal.ai API key у налаштуваннях."}
         return self._task("Розфарбовування якоря", lambda: self._pl.colorize_anchors(uid, force))
+
+    def label_ref(self, uid: str) -> dict:
+        """The anchor model labels the parts of the layer's reference (one request)."""
+        if not get_api_key():
+            return {"ok": False, "error": "Задайте fal.ai API key у налаштуваннях."}
+        e = self._entry(uid)
+        return self._task("Підписування референсу", lambda: self._pl.label_ref(e))
+
+    def clear_ref_labels(self, uid: str) -> dict:
+        if g := self._guard():
+            return g
+        self._pl.clear_ref_labels(self._entry(uid))
+        self._pl.manifest.save()
+        return {"ok": True, "state": self._state()}
 
     def colorize_all_anchors(self) -> dict:
         """Anchors of every layer in every clip that has a reference and no coloured anchor, in parallel."""
@@ -475,6 +492,8 @@ class Api:
         return self._set_ref(e, path)
 
     def _set_ref(self, e: M.LayerEntry, path: Path) -> dict:
+        if str(path) != e.ref_path:
+            self._pl.clear_ref_labels(e)  # the labels belong to the old picture
         e.ref_path = str(path)
         self._pl.manifest.save()
         if any(k.vlm_mapping for k in e.keys):

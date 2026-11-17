@@ -805,6 +805,19 @@ class VLMColorizer:
                 out.append((palette_card(pal), name, ck))
         return out
 
+    def label_reference(self, ref_path: Path, pal: np.ndarray, label: str = "", status=None) -> tuple[list, float]:
+        """Names, colours and points of the reference's parts (see reflabel); points snapped to the colours."""
+        from . import reflabel as RL
+        rgb, mask = RL.load_rgb(ref_path)
+        box = RL.character_box(mask)
+        urls = self._upload_all([(RL.grid_image(rgb, box), "ref_grid.jpg"), self._ref_items(ref_path, pal)[1]], label)
+        data, cost, raw = self._ask(RL.PROMPT, urls, label, status)
+        parts = data.get("parts") if isinstance(data, dict) else None
+        labels = RL.snap(rgb, mask, box, pal, parts) if isinstance(parts, list) else []
+        if not labels:
+            raise ValueError(f"VLM returned no parts: {raw[:300]!r}")
+        return labels, cost
+
     def color_anchor(self, key_rgba, regions: Regions, ref_path: Path, pal: np.ndarray, label: str = "",
                      status=None):
         (status or (lambda _s: None))("завантаження")

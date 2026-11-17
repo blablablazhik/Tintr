@@ -22,6 +22,7 @@ from scipy import ndimage as ndi
 
 from tintr.config import Config, app_dir, get_api_key
 from tintr.core import manifest as M
+from tintr.core import reflabel as RL
 from tintr.core import vlm as V
 from tintr.core.cost import CostTracker
 from tintr.core.dedupe import assign_duplicates, pixel_hash
@@ -90,7 +91,8 @@ class Pipeline:
             )
             if prev:  # keep everything the user already decided / paid for
                 for attr in ("ref_path", "color_layer_id", "enabled", "anchor_idx", "anchor_approved",
-                             "anchor_version", "anchor_approved_mapping", "extra_colors"):
+                             "anchor_version", "anchor_approved_mapping", "extra_colors",
+                             "ref_labels", "ref_labeled_file", "ref_labels_mtime"):
                     setattr(e, attr, getattr(prev, attr))
                 e.keys = prev.keys
             self._merge_keys(e, f.instances)
@@ -394,6 +396,40 @@ class Pipeline:
     @staticmethod
     def has_ref(e: M.LayerEntry) -> bool:
         return bool(e.ref_path and Path(e.ref_path).exists())
+
+    def labeled_ref(self, e: M.LayerEntry) -> Path | None:
+        """The labelled reference, if it was made from the current reference file."""
+        if not (e.ref_labeled_file and self.has_ref(e)):
+            return None
+        p = self.manifest.root / e.ref_labeled_file
+        if not p.exists() or abs(Path(e.ref_path).stat().st_mtime - e.ref_labels_mtime) > 1e-3:
+            return None
+        return p
+
+    def clear_ref_labels(self, e: M.LayerEntry) -> None:
+        e.ref_labels, e.ref_labeled_file, e.ref_labels_mtime = [], "", 0.0
+
+    def label_ref(self, e: M.LayerEntry) -> None:
+        """The anchor model names the parts of the reference; the labels are drawn on a copy of it."""
+        if not self.has_ref(e):
+            raise ValueError("Спершу оберіть референс.")
+        c = self.cfg
+        vlm = V.VLMColorizer(get_api_key(), c.vlm_model, self.cancel, reasoning=c.vlm_reasoning,
+                             log=self.log, url_cache=app_dir() / "upload_cache.json")
+        self.log(f"Підписування референсу {e.layer_name}: {c.vlm_model}")
+        ref = Path(e.ref_path)
+        self.progress(0, 1, "Підписування референсу")
+        labels, cost = vlm.label_reference(ref, self.palette(e), e.layer_name)
+        rgb, mask = RL.load_rgb(ref)
+        name = f"refs/labels_{e.clip_id}_{e.layer_id}.png"
+        (self.manifest.root / "refs").mkdir(parents=True, exist_ok=True)
+        RL.render(rgb, mask, labels).save(self.manifest.root / name)
+        e.ref_labels, e.ref_labeled_file, e.ref_labels_mtime = labels, name, ref.stat().st_mtime
+        self.cost.record(project=str(self.project.path), clip=e.clip_name, layer=e.layer_name, frame=-1,
+                         model=c.vlm_model, usd=cost)
+        self.manifest.save()
+        self.progress(1, 1, "Підписування референсу")
+        self.log(f"  ✓ {e.layer_name}: підписано частин — {len(labels)} · ${cost:.3f}")
 
     def _check_refs(self, todo: list, skip: bool) -> list:
         """One layer: a missing reference is an error. All layers: those layers are skipped (logged)."""
