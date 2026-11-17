@@ -19,6 +19,7 @@ from urllib.parse import quote
 from tintr import APP_NAME, __version__
 from tintr.config import Config, app_dir, get_api_key, set_api_key
 from tintr.core import manifest as M
+from tintr.core.models import catalog
 from tintr.core.palette import reference_palette
 from tintr.core.vlm import Cancelled
 from tintr.naming import TAG_RE
@@ -392,7 +393,7 @@ class Api:
         c = self._cfg
         return {"apiKey": get_api_key(), "model": c.vlm_model, "reasoning": c.vlm_reasoning,
                 "modelFollow": c.vlm_model_follow, "concurrency": c.concurrency, "port": c.rpc_port,
-                "est": c.vlm_est_cost, "estFollow": c.vlm_est_cost_follow}
+                "est": c.vlm_est_cost, "estFollow": c.vlm_est_cost_follow, "models": catalog()}
 
     def save_settings(self, s: dict) -> dict:
         c = self._cfg

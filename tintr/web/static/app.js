@@ -646,6 +646,30 @@ function confirmCost(what, usd) {
   });
 }
 
+// model choice: a list of tested-for-availability models + "other" (any OpenRouter vision model id)
+function modelPicker(id, label, list, cur) {
+  const known = list.some((m) => m.id === cur);
+  const opts = list.map((m) => `<option value="${esc(m.id)}" ${m.id === cur ? "selected" : ""}>${esc(m.id)} · ~$${m.est < 0.01 ? m.est.toFixed(4) : m.est.toFixed(2)} · ${esc(m.note)}</option>`).join("");
+  return `<div class="field"><label for="${id}">${label}</label>
+    <select id="${id}">${opts}<option value="__other" ${known ? "" : "selected"}>Інша модель (id OpenRouter)…</option></select>
+    <input id="${id}-c" type="text" placeholder="напр. google/gemini-3.8-flash" value="${known ? "" : esc(cur)}" ${known ? "hidden" : ""}></div>`;
+}
+
+function bindModelPicker(id, list, estId) {
+  const sel = $(`#${id}`), other = $(`#${id}-c`);
+  sel.addEventListener("change", () => {
+    other.hidden = sel.value !== "__other";
+    const m = list.find((x) => x.id === sel.value);
+    if (m) $(`#${estId}`).value = m.est;  // rough $ per request of the chosen model
+    if (!other.hidden) other.focus();
+  });
+}
+
+function pickedModel(id) {
+  const sel = $(`#${id}`);
+  return sel.value === "__other" ? $(`#${id}-c`).value.trim() : sel.value;
+}
+
 async function openSettings() {
   const s = await api().get_settings();
   modal(`<div class="dialog" role="dialog" aria-label="Налаштування"><h2>Налаштування</h2>
@@ -654,12 +678,12 @@ async function openSettings() {
       <button class="btn" id="s-show" type="button">Показати</button><button class="btn" id="s-check" type="button">Перевірити</button></div>
       <span id="s-note"></span></div>
     <div class="cols2">
-      <div class="field"><label for="s-model">Модель для якоря</label><input id="s-model" type="text" value="${esc(s.model)}"></div>
+      ${modelPicker("s-model", "Модель для якоря", s.models.anchor, s.model)}
       <div class="field"><label for="s-est">Оцінка $ за якір</label><input id="s-est" type="number" step="0.01" value="${s.est}"></div>
     </div>
     <label class="check"><input id="s-reason" type="checkbox" ${s.reasoning ? "checked" : ""}><span>Reasoning для якоря: модель сама розбирає неоднозначні місця. Довше, але точніше.</span></label>
     <div class="cols2">
-      <div class="field"><label for="s-model-f">Модель для кадрів за якорем</label><input id="s-model-f" type="text" value="${esc(s.modelFollow)}"></div>
+      ${modelPicker("s-model-f", "Модель для кадрів за якорем", s.models.follow, s.modelFollow)}
       <div class="field"><label for="s-est-f">Оцінка $ за кадр</label><input id="s-est-f" type="number" step="0.001" value="${s.estFollow}"></div>
     </div>
     <span style="color:var(--muted);font-size:12px;line-height:1.5">Моделі fal openrouter/router/vision. Кадри за якорем ідуть без reasoning: зразок уже є, тому швидка модель працює так само точно.</span>
@@ -669,17 +693,19 @@ async function openSettings() {
     </div>
     <div class="actions"><button class="btn" id="s-cancel">Скасувати</button><button class="btn primary" id="s-save">Зберегти</button></div></div>`);
   $("#s-show").onclick = () => { const i = $("#s-key"); i.type = i.type === "password" ? "text" : "password"; };
+  bindModelPicker("s-model", s.models.anchor, "s-est");
+  bindModelPicker("s-model-f", s.models.follow, "s-est-f");
   $("#s-check").onclick = async () => {
     const n = $("#s-note"); n.className = ""; n.textContent = "Перевірка…";
-    const r = await api().check_key($("#s-key").value, $("#s-model").value);
+    const r = await api().check_key($("#s-key").value, pickedModel("s-model"));
     n.className = r.ok ? "note-ok" : "note-warn"; n.textContent = r.ok ? "Ключ працює." : `Ключ не прийнято: ${r.error}`;
   };
   $("#s-cancel").onclick = closeModal;
   $("#s-save").onclick = async () => {
     await call("save_settings", {
-      apiKey: $("#s-key").value, model: $("#s-model").value, reasoning: $("#s-reason").checked,
+      apiKey: $("#s-key").value, model: pickedModel("s-model"), reasoning: $("#s-reason").checked,
       concurrency: +$("#s-conc").value, est: +$("#s-est").value, port: +$("#s-port").value,
-      modelFollow: $("#s-model-f").value, estFollow: +$("#s-est-f").value,
+      modelFollow: pickedModel("s-model-f"), estFollow: +$("#s-est-f").value,
     });
     closeModal();
   };
