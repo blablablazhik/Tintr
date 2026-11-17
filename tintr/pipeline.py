@@ -90,7 +90,7 @@ class Pipeline:
             )
             if prev:  # keep everything the user already decided / paid for
                 for attr in ("ref_path", "color_layer_id", "enabled", "anchor_idx", "anchor_approved",
-                             "anchor_version", "anchor_approved_mapping"):
+                             "anchor_version", "anchor_approved_mapping", "extra_colors"):
                     setattr(e, attr, getattr(prev, attr))
                 e.keys = prev.keys
             self._merge_keys(e, f.instances)
