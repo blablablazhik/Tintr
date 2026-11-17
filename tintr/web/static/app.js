@@ -10,6 +10,7 @@ const ui = {
   zooms: {},                         // zoom (1 = fit) + pan per view: main, ref; kept across keys/modes
   panned: false,                     // last mouse press was a pan drag, not a click
   showAnchor: false,                 // the stage shows the anchor instead of the key (KeyA), same zoom
+  showRef: false,                    // the stage shows the reference (KeyR), with its own zoom
   hideLines: false,                  // coloured frames without the line art on top (KeyL), kept across keys
   pipette: false,                    // the next click on the reference adds its colour to the palette
   palNote: "",                       // short note under the palette (pipette result)
@@ -288,6 +289,10 @@ function stageView(l, k) {
     return `<div class="empty"><b>Ключі ще не виведені</b>Tintr збере ключові кадри цього кліпу з TVPaint одним викликом і одразу знайде на них області для розфарбування. Це безкоштовно.
       <button class="btn primary" data-act="export" ${S.busy ? "disabled" : ""}>Вивести ключі</button></div>`;
   }
+  if (ui.showRef && l.refUrl) {  // the reference at full size; the pipette works here too
+    return `<div class="ref-stage zoomable ref-pick ${ui.pipette ? "picking" : ""}" data-zoom="refmain"><div class="zoom">
+      <img src="${l.refUrl.replace(/&w=\d+/, "")}" alt="Референс ${esc(l.name)}"></div></div>` + zoomBar("ref") + `<span class="anchor-tag">Референс · ${esc(l.ref)}</span>`;
+  }
   const a = ui.showAnchor ? anchorOf(l) : null;
   if (a) {  // quick check against the anchor: same view, same zoom; regions are not editable here
     const mode = modesFor(a).includes(ui.mode) ? ui.mode : "color";
@@ -335,9 +340,9 @@ function zoomBar(mode) {
     title="Показати / сховати лайн на розфарбованих кадрах (L)">Лайн</button>` : "";
   return `<div class="zoombar" role="group" aria-label="Масштаб">${lines}
     <button class="icon-btn" data-act="zoom" data-z="out" title="Зменшити (−)" aria-label="Зменшити">−</button>
-    <span id="zoom-pct">${Math.round(zstate("main").s * 100)}%</span>
+    <span id="zoom-pct">${Math.round(zstate(stageZoom()).s * 100)}%</span>
     <button class="icon-btn" data-act="zoom" data-z="in" title="Збільшити (+)" aria-label="Збільшити">+</button>
-    <button class="btn sm" data-act="zoom" data-z="px" title="Піксель у піксель">1:1</button>
+    ${mode === "ref" ? "" : '<button class="btn sm" data-act="zoom" data-z="px" title="Піксель у піксель">1:1</button>'}
     <button class="btn sm" data-act="zoom" data-z="fit" title="Вписати (F або 0)">Вписати</button></div>`;
 }
 
@@ -373,7 +378,7 @@ function applyZoom(name = "main") {
   z.style.transform = `translate(${Z.x}px, ${Z.y}px) scale(${Z.s})`;
   el.classList.toggle("zoomed", Z.s > 1);
   for (const f of followers(name)) applyZoom(f);
-  if (name === "main") {
+  if (name === stageZoom()) {
     const pct = $("#zoom-pct");
     if (pct) pct.textContent = `${Math.round(Z.s * 100)}%`;
   }
@@ -393,8 +398,10 @@ function zoomTo(name, s, cx, cy) {
   applyZoom(name);
 }
 
+const stageZoom = () => (ui.showRef ? "refmain" : "main");  // the zoom that the bar, the keys and F drive
+
 function zoomCmd(cmd) {
-  const name = "main";
+  const name = stageZoom();
   const el = zoomEl(name);
   if (!el) return;
   closePopover();
@@ -458,8 +465,20 @@ function toggleLines() {
 
 function toggleAnchor(on = !ui.showAnchor) {
   if (on && !anchorOf(curLayer())) on = false;
-  if (on === ui.showAnchor) return;
+  if (on === ui.showAnchor && !(on && ui.showRef)) return;
   ui.showAnchor = on;
+  if (on) ui.showRef = false;
+  closePopover();
+  render();
+}
+
+function toggleRef(on = !ui.showRef) {
+  // like A for the anchor: the reference in the stage; R again (or Esc) goes back to the key
+  const l = curLayer();
+  if (on && !(l && l.refUrl)) on = false;
+  if (on === ui.showRef && !(on && ui.showAnchor)) return;
+  ui.showRef = on;
+  if (on) ui.showAnchor = false;
   closePopover();
   render();
 }
@@ -532,9 +551,9 @@ function refSampler(url) {
   return refPixels.loading;
 }
 
-function refColorAt(cx, cy) {
+function refColorAt(view, cx, cy) {
   // client point → pixel of the reference image (object-fit: contain inside the zoomed box) → "#RRGGBB"
-  const img = document.querySelector("#ref img");
+  const img = view.querySelector("img");
   if (!img || !refPixels.ctx) return null;
   const r = img.getBoundingClientRect(), s = Math.min(r.width / refPixels.w, r.height / refPixels.h);
   const x = Math.floor((cx - r.left - (r.width - refPixels.w * s) / 2) / s);
@@ -549,7 +568,7 @@ function togglePipette(on = !ui.pipette) {
   const l = curLayer();
   if (on && !(l && l.refUrl)) on = false;
   ui.pipette = on;
-  $("#ref")?.classList.toggle("picking", on);
+  for (const el of document.querySelectorAll(".ref-pick")) el.classList.toggle("picking", on);
   $('[data-act="pipette"]')?.classList.toggle("on", on);
   const prev = $("#pip-preview");
   if (prev && !on) prev.hidden = true;
@@ -565,27 +584,10 @@ function palNote(text) {
 }
 
 function bindPipette() {
-  const ref = $("#ref"), l = curLayer();
-  if (!ref || !l) return;
+  const l = curLayer();
+  if (!l) return;
   if (ui.pipette) refSampler(l.refUrl);
-  const prev = $("#pip-preview");
-  ref.addEventListener("mousemove", (e) => {
-    if (!ui.pipette) return;
-    const c = refColorAt(e.clientX, e.clientY);
-    prev.hidden = !c;
-    if (c) { prev.style.background = c; prev.style.left = `${e.clientX + 14}px`; prev.style.top = `${e.clientY + 14}px`; }
-  });
-  ref.addEventListener("mouseleave", () => { prev.hidden = true; ui.overRef = false; });
-  ref.addEventListener("mouseenter", () => { ui.overRef = true; });
-  ref.addEventListener("click", async (e) => {
-    if (!ui.pipette || ui.panned || S.busy) return;
-    const c = refColorAt(e.clientX, e.clientY);
-    if (!c) return;
-    const keep = e.shiftKey;
-    if (!keep) togglePipette(false);
-    const r = await call("add_palette_color", l.uid, c);
-    if (r.ok) palNote(r.exists ? `Такий колір уже є: ${r.name}` : `Додано ${r.name}`);
-  });
+  for (const ref of document.querySelectorAll(".ref-pick")) bindRefPick(ref, l);
   const pal = $("#palette");
   if (pal) pal.addEventListener("contextmenu", async (e) => {
     const sw = e.target.closest(".extra");
@@ -595,13 +597,35 @@ function bindPipette() {
   });
 }
 
+function bindRefPick(ref, l) {
+  // the side reference and the reference in the stage (R): pipette into the palette
+  const prev = $("#pip-preview");
+  ref.addEventListener("mousemove", (e) => {
+    if (!ui.pipette) return;
+    const c = refColorAt(ref, e.clientX, e.clientY);
+    prev.hidden = !c;
+    if (c) { prev.style.background = c; prev.style.left = `${e.clientX + 14}px`; prev.style.top = `${e.clientY + 14}px`; }
+  });
+  ref.addEventListener("mouseleave", () => { prev.hidden = true; ui.overRef = false; });
+  ref.addEventListener("mouseenter", () => { ui.overRef = true; });
+  ref.addEventListener("click", async (e) => {
+    if (!ui.pipette || ui.panned || S.busy) return;
+    const c = refColorAt(ref, e.clientX, e.clientY);
+    if (!c) return;
+    const keep = e.shiftKey;
+    if (!keep) togglePipette(false);
+    const r = await call("add_palette_color", l.uid, c);
+    if (r.ok) palNote(r.exists ? `Такий колір уже є: ${r.name}` : `Додано ${r.name}`);
+  });
+}
+
 // ---------- right panel
 function sideView() {
   const l = curLayer();
   if (!l) return `<aside class="side"></aside>`;
   const a = anchorOf(l);
   const ref = l.refUrl
-    ? `<div class="ref zoomable ${a ? "with-anchor" : ""} ${ui.pipette ? "picking" : ""}" data-zoom="ref" id="ref"><div class="zoom"><img src="${l.refUrl}" alt="Референс ${esc(l.name)}"></div></div><span class="ref-name">${esc(l.ref)} · ${l.palette.length} кольорів у палітрі</span>
+    ? `<div class="ref ref-pick zoomable ${a ? "with-anchor" : ""} ${ui.pipette ? "picking" : ""}" data-zoom="ref" id="ref"><div class="zoom"><img src="${l.refUrl}" alt="Референс ${esc(l.name)}"></div></div><span class="ref-name">${esc(l.ref)} · ${l.palette.length} кольорів у палітрі</span>
        <div class="pal-head"><span class="eyebrow">Палітра</span><span class="pal-note" id="pal-note">${esc(ui.palNote)}</span>
          <button class="link ${ui.pipette ? "on" : ""}" data-act="pipette" ${S.busy ? "disabled" : ""} title="Додати в палітру колір з референса (I). Shift+клік — додати кілька">+ Піпетка</button></div>
        <div class="palette" id="palette">${l.palette.map((p) => `<span class="${p.extra ? "extra" : ""}" data-name="${p.name}" style="background:${p.hex}"
@@ -744,7 +768,7 @@ async function onClick(e) {
     case "folder": call("open_folder"); break;
     case "log": toggleLog(); break;
     case "view": ui.view = b.dataset.view; closePopover(); render(); break;
-    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; ui.showAnchor = false; ui.pipette = false; closePopover(); render(); break;
+    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; ui.showAnchor = false; ui.showRef = false; ui.pipette = false; closePopover(); render(); break;
     case "zoom": zoomCmd(b.dataset.z); break;
     case "lines": toggleLines(); break;
     case "pipette": togglePipette(); break;
@@ -758,7 +782,7 @@ async function onClick(e) {
       break;
     case "undo": undoRedo(false); break;
     case "redo": undoRedo(true); break;
-    case "key": ui.idx = +b.dataset.idx; ui.showAnchor = false; closePopover(); render(); break;
+    case "key": ui.idx = +b.dataset.idx; ui.showAnchor = false; ui.showRef = false; closePopover(); render(); break;
     case "mode": ui.mode = b.dataset.mode; closePopover(); render(); break;
     case "rescan": call("connect", null, true); break;
     case "export": call("export"); break;
@@ -796,7 +820,7 @@ const TOOLS = [["select", "Вибір", "V", "клік по області — �
   ["eraser", "Гумка", "E", "стирає до прозорого"], ["bucket", "Заливка", "G", "залити область поточним кольором"],
   ["picker", "Піпетка", "I", "взяти колір з кадру"]];
 const editors = {};  // "uid:masterIdx" → editor (kept across renders: the canvas node is moved into the new DOM)
-const drawing = () => ui.mode === "color" && (ui.tool === "brush" || ui.tool === "eraser") && !ui.showAnchor;
+const drawing = () => ui.mode === "color" && (ui.tool === "brush" || ui.tool === "eraser") && !ui.showAnchor && !ui.showRef;
 
 function toolColor(l) {
   const p = l.palette.find((c) => c.name === ui.color) || l.palette[0];
@@ -1007,7 +1031,7 @@ function onDrawStart(e) {
 
 function undoRedo(redo) {
   const l = curLayer(), k = curKey();
-  const ed = l && k && ui.mode === "color" && !ui.showAnchor ? editors[`${l.uid}:${master(l, k).idx}`] : null;
+  const ed = l && k && ui.mode === "color" && !ui.showAnchor && !ui.showRef ? editors[`${l.uid}:${master(l, k).idx}`] : null;
   if (!ed || !ed.ready || S.busy) return;
   const step = (redo ? ed.redo : ed.undo).pop();
   if (!step) return;
@@ -1109,7 +1133,7 @@ ui.help = store.get("tintr.help") === "1";
 ui.toolsMin = store.get("tintr.toolsMin") === "1";
 
 const SHORTCUTS = [
-  ["← →", "попередній / наступний ключ"], ["A", "якір замість ключа"], ["L", "лайн увімк. / вимк."],
+  ["← →", "попередній / наступний ключ"], ["A", "якір замість ключа"], ["R", "референс замість ключа"], ["L", "лайн увімк. / вимк."],
   ["F або 0", "вписати (100%)"], ["+ −", "масштаб; колесо — до курсора"], ["Пробіл+тягнути", "рухати кадр"],
   ["V B E G I", "вибір · пензель · гумка · заливка · піпетка"], ["Alt+клік", "колір з кадру (пензель)"],
   ["[ ]", "розмір пензля"], ["Ctrl+Z", "скасувати; Ctrl+Shift+Z — повторити"],
@@ -1168,7 +1192,7 @@ document.addEventListener("mousedown", (e) => {
   if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame")) closePopover();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closePopover(); closeModal(); toggleAnchor(false); togglePipette(false); if (ui.help) toggleHelp(false); return; }
+  if (e.key === "Escape") { closePopover(); closeModal(); toggleAnchor(false); toggleRef(false); togglePipette(false); if (ui.help) toggleHelp(false); return; }
   if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") { e.preventDefault(); undoRedo(e.shiftKey); return; }
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyY") { e.preventDefault(); undoRedo(true); return; }
@@ -1178,9 +1202,10 @@ document.addEventListener("keydown", (e) => {
   else if (e.key === "-") zoomCmd("out");
   else if (e.key === "0" || e.code === "KeyF") zoomCmd("fit");  // F: any keyboard layout
   else if (e.code === "KeyA") toggleAnchor();  // any keyboard layout
+  else if (e.code === "KeyR") toggleRef();
   else if (e.code === "KeyL") toggleLines();
   else if (e.code === "KeyH" || e.key === "?") toggleHelp();
-  else if (e.code === "KeyI") { if (ui.overRef) togglePipette(); else setTool("picker"); }  // over the reference: into the palette
+  else if (e.code === "KeyI") { if (ui.overRef || ui.showRef) togglePipette(); else setTool("picker"); }  // over the reference: into the palette
   else if (e.code === "KeyV") setTool("select");
   else if (e.code === "KeyB") setTool("brush");
   else if (e.code === "KeyE") setTool("eraser");
@@ -1205,6 +1230,7 @@ function stepKey(dir) {
   if (!next) return;
   ui.idx = next.idx;
   ui.showAnchor = false;
+  ui.showRef = false;
   closePopover();
   render();
 }
