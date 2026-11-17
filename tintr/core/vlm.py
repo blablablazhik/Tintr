@@ -549,6 +549,12 @@ def parse_mapping(text: str) -> dict:
 
 
 # ------------------------------------------------------------------ client
+# max_tokens includes the hidden reasoning tokens: with reasoning a model can spend most of a small budget
+# thinking and the JSON gets cut off (gemini-3.8-flash: 7.2k of 8k on 42 regions). A cut-off answer is retried
+# with twice the budget, up to the cap.
+MAX_TOKENS = 8000
+MAX_TOKENS_REASONING = 32000
+MAX_TOKENS_CAP = 64000
 URL_TTL = 12 * 3600  # reuse uploaded reference/palette URLs across sessions for this long
 _REASONING_MANDATORY: set[str] = set()  # models fal refuses to run with reasoning off
 
@@ -633,6 +639,7 @@ class VLMColorizer:
         last = None
         cost_total = 0.0
         reasoning = self.reasoning or self.model in _REASONING_MANDATORY
+        budget = MAX_TOKENS_REASONING if reasoning else MAX_TOKENS
         for attempt in range(4):
             if self.cancel.is_set():
                 raise Cancelled()
@@ -649,10 +656,11 @@ class VLMColorizer:
                     _started.append(time.time())
                     status("генерується")
 
+            tok = None
             try:
                 res = self.client.subscribe(ENDPOINT, arguments={
                     "model": self.model, "prompt": prompt, "image_urls": urls,
-                    "temperature": 0, "max_tokens": 8000, "reasoning": reasoning,
+                    "temperature": 0, "max_tokens": budget, "reasoning": reasoning,
                 }, client_timeout=600, on_queue_update=on_update)
                 usage = res.get("usage") or {}
                 cost_total += float(usage.get("cost") or 0)
@@ -664,10 +672,14 @@ class VLMColorizer:
                 self.last = {"seconds": now - t0, "queue": q, "tokens": tok, "prompt_tokens": usage.get("prompt_tokens"),
                              "reasoning": reasoning, "cost": cost_total, "attempts": attempt + 1}
                 return parse_mapping(res.get("output", "")), cost_total, res.get("output", "")
-            except ValueError as e:  # unparsable answer: retry, with reasoning on
+            except ValueError as e:  # unparsable answer
                 last = e
-                if not reasoning:
+                if tok and tok >= budget - 64 and budget < MAX_TOKENS_CAP:  # cut off by the token limit
+                    budget = min(MAX_TOKENS_CAP, budget * 2)
+                    self.log(f"    {label}: відповідь обрізано лімітом токенів — повтор з лімітом {budget}")
+                elif not reasoning:  # garbled answer: retry with reasoning on
                     reasoning = True
+                    budget = max(budget, MAX_TOKENS_REASONING)
                     self.log(f"    {label}: відповідь не розібрано — повтор з reasoning")
             except Exception as e:  # noqa: BLE001
                 last = e
@@ -676,6 +688,7 @@ class VLMColorizer:
                 if not reasoning and "reasoning is mandatory" in str(e).lower():
                     _REASONING_MANDATORY.add(self.model)  # e.g. gemini-3.8-flash: retry at once, remember
                     reasoning = True
+                    budget = max(budget, MAX_TOKENS_REASONING)
                     self.log(f"    {label}: модель {self.model} працює лише з reasoning — повтор")
                     continue
                 time.sleep(3 * (attempt + 1))
