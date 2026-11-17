@@ -27,8 +27,8 @@ class Config:
     rpc_port: int = 3000
     concurrency: int = 10  # parallel VLM requests (anchors and keys of all clips share one pool)
     # anchor: the model decides every part alone, so a strong reasoning model pays off (one call per layer)
-    vlm_model: str = "google/gemini-3.8-flash"
-    vlm_est_cost: float = 0.05  # rough $ per anchor for the estimate; real cost comes from fal usage
+    vlm_model: str = "anthropic/claude-opus-5.5"  # best in the anchor test (37/42 regions, $0.064, 35 s)
+    vlm_est_cost: float = 0.07  # rough $ per anchor for the estimate; real cost comes from fal usage
     vlm_reasoning: bool = True  # anchor reasoning; models that require it get it anyway
     # keys that follow the approved anchor: a fast model is as accurate here (bench: 100% vs 100%)
     vlm_model_follow: str = "anthropic/claude-haiku-5.5"
