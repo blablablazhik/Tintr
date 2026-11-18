@@ -651,7 +651,8 @@ function bindPipette() {
   if (!l) return;
   if (ui.pipette) samplePickers();
   for (const ref of document.querySelectorAll(".ref-pick")) bindRefPick(ref, l);
-  bindPalAdd();
+  bindPalAdd("pal");
+  bindPalAdd("tpal");
   const pal = $("#palette");
   if (pal) pal.addEventListener("contextmenu", async (e) => {
     const sw = e.target.closest(".extra");
@@ -708,10 +709,15 @@ function palAddView() {
       aria-expanded="false" title="Додати колір у палітру" aria-label="Додати колір у палітру" ${S.busy ? "disabled" : ""}>+</button>
     <div class="menu pal-menu" id="pal-menu" role="menu" hidden>
       <button role="menuitem" data-act="pipette"><span>Піпетка з референса</span><small>I · клік по референсу, Shift+клік — кілька</small></button>
-      <div class="pal-custom"><input type="color" id="pal-color" value="${normHex(ui.palHex) || "#888888"}" title="Вибрати колір" aria-label="Вибрати колір">
-        <input type="text" id="pal-hex" value="${esc(ui.palHex)}" maxlength="7" spellcheck="false" autocomplete="off" placeholder="#RRGGBB" aria-label="Код кольору">
-        <button class="btn sm primary" data-act="pal-add-hex">Додати</button></div>
+      ${palCustomView("pal")}
     </div></div>`;
+}
+
+function palCustomView(at) {
+  // any colour by its code or from the system colour picker; at: "pal" (palette "+" menu) or "tpal" (the dock's tool colours)
+  return `<div class="pal-custom"><input type="color" id="${at}-color" value="${normHex(ui.palHex) || "#888888"}" title="Вибрати колір" aria-label="Вибрати колір">
+    <input type="text" id="${at}-hex" value="${esc(ui.palHex)}" maxlength="7" spellcheck="false" autocomplete="off" placeholder="#RRGGBB" aria-label="Код кольору">
+    <button class="btn sm primary" data-act="pal-add-hex" data-at="${at}" title="Додати колір у палітру">Додати</button></div>`;
 }
 
 function normHex(v) {
@@ -721,16 +727,22 @@ function normHex(v) {
   return /^[0-9a-f]{6}$/i.test(h) ? "#" + h.toUpperCase() : "";
 }
 
-async function addHexColor() {
-  const l = curLayer(), inp = $("#pal-hex"), hex = normHex(inp ? inp.value : ui.palHex);
+async function addHexColor(at = "pal") {
+  const l = curLayer(), inp = $(`#${at}-hex`), hex = normHex(inp ? inp.value : ui.palHex);
   if (!hex) { inp?.classList.add("bad"); inp?.focus(); return; }
   closeMenus();
+  if (at === "tpal") { ui.toolPal = false; const p = $(".tpal"); if (p) p.hidden = true; }  // the new colour becomes the brush colour
   const r = await call("add_palette_color", l.uid, hex);
-  if (r.ok) palNote(r.exists ? `Такий колір уже є: ${r.name}` : `Додано ${r.name} ${hex}`);
+  if (!r.ok) return;
+  palNote(r.exists ? `Такий колір уже є: ${r.name}` : `Додано ${r.name} ${hex}`);
+  if (at === "tpal") {
+    setColor(r.name);
+    if (ui.tool === "select" || ui.tool === "picker") setTool("brush");
+  }
 }
 
-function bindPalAdd() {
-  const pick = $("#pal-color"), inp = $("#pal-hex");
+function bindPalAdd(at = "pal") {
+  const pick = $(`#${at}-color`), inp = $(`#${at}-hex`);
   if (!pick || !inp) return;
   pick.addEventListener("input", () => { ui.palHex = inp.value = pick.value.toUpperCase(); inp.classList.remove("bad"); });
   inp.addEventListener("input", () => {
@@ -739,7 +751,7 @@ function bindPalAdd() {
     inp.classList.toggle("bad", !!inp.value.trim() && !h && inp.value.replace(/^#/, "").length >= 6);
     if (h) pick.value = h.toLowerCase();
   });
-  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addHexColor(); } });
+  inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addHexColor(at); } });
 }
 
 function refLabelsView(l) {
@@ -890,7 +902,7 @@ async function onClick(e) {
     case "zoom": zoomCmd(b.dataset.z); break;
     case "lines": toggleLines(); break;
     case "pipette": togglePipette(); break;
-    case "pal-add-hex": addHexColor(); break;
+    case "pal-add-hex": addHexColor(b.dataset.at); break;
     case "tool": setTool(b.dataset.tool); break;
     case "help": toggleHelp(); break;
     case "dups": {  // from what is shown (a selected repeat unfolds them); folding moves the selection to its original
@@ -981,7 +993,7 @@ function toolsView(l) {
     title="${n} (${key}): ${tip}" aria-label="${n}" aria-pressed="${ui.tool === id}">${ICON[id]}</button>`;
   const pal = l.palette.map((p) => `<button style="background:${p.hex}" class="${p.name === c.name ? "cur" : ""}" data-act="tcolor" data-c="${p.name}" title="${p.name} ${p.hex}"></button>`).join("");
   const color = `<div class="dcolor"><button class="tcolor" data-act="tpal" style="background:${c.hex}" title="Колір пензля і заливки: ${c.name}" aria-label="Колір ${c.name}" ${dis}></button>
-    <div class="pal-grid tpal" ${ui.toolPal ? "" : "hidden"}>${pal}</div></div>`;
+    <div class="tpal" ${ui.toolPal ? "" : "hidden"}><div class="pal-grid">${pal}</div>${palCustomView("tpal")}</div></div>`;
   if (ui.toolsMin) {
     const t = TOOLS.find(([id]) => id === ui.tool) || TOOLS[0];
     return `<div class="dgroup" id="tmin-tool">${tool(t)}</div>${color}
@@ -1026,7 +1038,7 @@ function setColor(name) {
   if (!l) return;
   const c = toolColor(l), b = $(".dock .tcolor");
   if (b) { b.style.background = c.hex; b.title = `Колір пензля і заливки: ${c.name}`; }
-  for (const x of document.querySelectorAll(".tpal button")) x.classList.toggle("cur", x.dataset.c === c.name);
+  for (const x of document.querySelectorAll('.tpal [data-act="tcolor"]')) x.classList.toggle("cur", x.dataset.c === c.name);
 }
 
 function framePoint(cx, cy) {
