@@ -4,18 +4,34 @@
 (instances), прибирає піксельні повтори і розфарбовує кадри методом «відро по номерах»:
 
 - код ділить оригінальний лайн на замкнені області й нумерує їх;
-- **Gemini** (через fal `openrouter/router/vision`) дивиться на кадр, character reference і палітру рефу
-  та відповідає, яким кольором палітри залити кожну область (або «фон»);
+- мультимодальна модель (через fal `openrouter/router/vision`) дивиться на кадр, character reference і палітру
+  рефу та відповідає, яким кольором палітри залити кожну область (або «фон»);
 - код заливає області пласкими кольорами рефу — без тіней, градієнтів і змін ліній;
 - результат вставляється новим шаром `<шар>_color` під оригінальним шаром.
 
-## Вимоги на кожному ПК
-1. TVPaint 11 з плагіном **tvpaint-rpc.dll** у папці `plugins` (https://github.com/brunchstudio/tvpaint-rpc/releases).
-2. Відкритий проект у TVPaint (RPC слухає порт 3000).
-3. fal.ai API key (меню «⋯» у правому верхньому куті → Налаштування; зберігається у Windows Credential Manager).
-4. Microsoft Edge WebView2 (є у Windows 11 за замовчуванням).
+## Встановлення
 
-`Tintr.exe` — один файл, Python не потрібен.
+1. Завантажте `Tintr.exe` з останнього релізу на сторінці **[Releases](../../releases/latest)**.
+   Це один файл: встановлювати нічого не треба, Python не потрібен. Покладіть його в будь-яку папку.
+2. Встановіть плагін **tvpaint-rpc.dll** у папку `plugins` TVPaint 11
+   (https://github.com/brunchstudio/tvpaint-rpc/releases) і перезапустіть TVPaint.
+3. Відкрийте проект у TVPaint (плагін слухає порт 3000), потім запустіть `Tintr.exe`.
+4. Вкажіть fal.ai API key: меню «⋯» у правому верхньому куті → Налаштування. Ключ отримати на
+   https://fal.ai/dashboard/keys; він зберігається у Windows Credential Manager, не у файлах.
+
+**Перший запуск.** Exe не підписаний, тому Windows може показати «Windows захистив ваш ПК» —
+натисніть «Докладніше» → «Виконати все одно». Деякі антивіруси хибно реагують на програми, зібрані
+PyInstaller; якщо файл зник після завантаження, додайте його у виключення.
+
+### Вимоги
+- Windows 10/11 з Microsoft Edge WebView2 (у Windows 11 є за замовчуванням; для Windows 10 —
+  https://developer.microsoft.com/microsoft-edge/webview2/).
+- TVPaint 11 з плагіном tvpaint-rpc.
+- fal.ai API key з балансом: кожен запит до моделі платний (ціни — нижче, у розділі «Моделі»).
+
+### Оновлення
+Завантажте новий `Tintr.exe` з Releases і замініть старий. Налаштування, ключ і прогрес проектів
+зберігаються окремо від exe і не губляться.
 
 ## Робота
 Ліворуч — кліпи і персонажі (шари `_cc-`) у них, по центру — превʼю ключа, праворуч — референс
@@ -37,11 +53,6 @@
 7. **Вставка** — вибрати шари і що зробити з проектом: нова версія `<проект>_tintr_vNN.tvpp`,
    перезаписати або не зберігати.
 
-Моделі (Налаштування): **якір** — сильна модель з reasoning (за замовчуванням `google/gemini-3.8-flash`),
-бо тут модель сама розбирає неоднозначні місця; **кадри за якорем** — швидка модель без reasoning
-(`anthropic/claude-haiku-5.5`): зі зразком вона так само точна, але в ~2.5 раза швидша і в ~25 разів дешевша.
-Порівняти моделі на своєму затвердженому якорі: `tools\bench_vlm.py <проект.tvpp> --models … --follow <ключ>`.
-
 Будь-який кадр можна виправити кліком по області. Змінили й заново затвердили якір — кадри, зроблені за
 старим якорем, перефарбуються (повернення до вже затвердженого стану нових запитів не робить).
 
@@ -62,7 +73,16 @@
 Повторний запуск продовжує з місця зупинки (`manifest.json`); вже розфарбовані кадри не оплачуються вдруге.
 Змінений у TVPaint ключовий кадр розфарбовується заново. «Журнал» унизу показує час кожної фази запиту.
 
-Витрати (реальна ціна від fal): `%APPDATA%\Tintr\ledger.jsonl`; налаштування: `%APPDATA%\Tintr\config.json`.
+### Моделі
+Обираються в Налаштуваннях. **Якір** — сильна модель з reasoning (за замовчуванням `anthropic/claude-opus-5.5`,
+~$0.09 за якір), бо тут модель сама розбирає неоднозначні місця. **Кадри за якорем** — швидка модель без reasoning
+(за замовчуванням `anthropic/claude-haiku-5.5`, ~$0.002 за кадр): зі зразком вона так само точна, але значно
+швидша й дешевша. Перед запуском показується оцінка вартості; реальна ціна береться з fal.
+
+### Де що зберігається
+- Налаштування: `%APPDATA%\Tintr\config.json`; журнал витрат: `%APPDATA%\Tintr\ledger.jsonl`.
+- fal.ai API key — у Windows Credential Manager (запис `Tintr-fal`).
+- Прогрес і референси проекту — у папці `<проект>_tintr` поруч із файлом `.tvpp`.
 
 ## Обмеження
 - Області — це замкнені зони лайну. Розриви до ~3 px закриваються автоматично; якщо дві частини з'єднані
@@ -71,11 +91,25 @@
 - Плагін RPC передає кирилицю як `?`: шар `Anim_1_сс-` видно як `Anim_1_??-`. Tintr це враховує;
   кольоровий шар отримує латинську назву (`Anim_1_color`). Шлях до проекту бажано без кирилиці.
 
+---
+
 ## Розробка
-Запуск у dev-режимі (з DevTools) у терміналі PowerShell з кореня проекту:
+Потрібні Python 3.12 і [uv](https://docs.astral.sh/uv/). У PowerShell з кореня проекту:
 ```powershell
-$env:TINTR_DEBUG = "1"; .venv\Scripts\python.exe run.py
+uv venv .venv --python 3.12
+uv pip install --python .venv\Scripts\python.exe -r requirements.txt pyinstaller
+.venv\Scripts\python.exe run.py                    # запуск
+$env:TINTR_DEBUG = "1"; .venv\Scripts\python.exe run.py   # запуск з DevTools
+.venv\Scripts\python.exe tools\probe.py            # діагностика підключення / шарів
 ```
+Порівняти моделі на своєму затвердженому якорі: `tools\bench_vlm.py <проект.tvpp> --models … --follow <ключ>`.
+
+### Збірка й реліз
+```powershell
+.venv\Scripts\pyinstaller Tintr.spec --noconfirm   # → dist\Tintr.exe
+```
+`build/` і `dist/` не комітяться. Готовий `dist\Tintr.exe` викладається як файл релізу на GitHub
+(Releases → Draft a new release, тег на кшталт `v0.1.0`).
 
 ### Браузерний режим (дивитися з ноута, працює на компі)
 ```powershell
@@ -90,12 +124,3 @@ $env:TINTR_DEBUG = "1"; .venv\Scripts\python.exe run.py
 - Референс персонажа завантажується з ноута й зберігається в `<проект>_tintr\refs`.
 - З'єднання — звичайний HTTP: відкривайте лише в довіреній мережі (Tailscale, домашня LAN). Хто має
   посилання з токеном, бачить і налаштування, зокрема fal API key.
-
-Встановлення й інші команди:
-```
-uv venv .venv --python 3.12
-uv pip install --python .venv\Scripts\python.exe -r requirements.txt pyinstaller
-.venv\Scripts\python.exe run.py                    # запуск (TINTR_DEBUG=1 — DevTools)
-.venv\Scripts\pyinstaller Tintr.spec --noconfirm   # збірка dist\Tintr.exe
-.venv\Scripts\python.exe tools\probe.py            # діагностика підключення / шарів
-```
