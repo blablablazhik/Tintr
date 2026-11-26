@@ -19,6 +19,8 @@ const ui = {
   size: 12, color: null,             // brush diameter in frame px; palette name ("C3") of brush and bucket
   toolPal: false, space: false,      // tool palette open; Space held (left drag pans)
   overRef: false,                    // the cursor is over the reference (I = pipette into the palette there)
+  libOpen: false, libQuery: "",      // hero library window
+  libRename: null,                   // id of the hero whose name is being edited
 };
 
 const REMOTE = !!window.TINTR_REMOTE;
@@ -50,6 +52,7 @@ const ICON = {
   undo: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
   redo: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>',
   more: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
+  heroes: '<svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="6.5" r="2.6"/><path d="M2.5 16c0-2.8 2-4.6 4.5-4.6s4.5 1.8 4.5 4.6"/><circle cx="13.6" cy="7.2" r="2.2"/><path d="M12.6 11.6c.4-.1.7-.1 1-.1 2.2 0 3.9 1.6 3.9 4.1"/></svg>',
   arrow: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#3E5266" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
 };
 
@@ -138,7 +141,7 @@ const STEP_OF_STAGE = { missing: 0, export: 0, ref: 1, anchor: 1, approve: 1, fr
 function render() {
   const app = $("#app");
   if (!S) return;
-  if (!S.connected) { app.innerHTML = header(false) + connectView() + footer(); bindConnect(); renderFooter(); return; }
+  if (!S.connected) { ui.libOpen = false; renderLibrary(); app.innerHTML = header(false) + connectView() + footer(); bindConnect(); renderFooter(); return; }
   ensureSelection();
   // a re-render that the user didn't ask for (autosaved strokes, a state push) keeps open menus open;
   // clicking an action closes them before its own render
@@ -151,6 +154,7 @@ function render() {
     if (m) { m.hidden = false; m.previousElementSibling.setAttribute("aria-expanded", "true"); }
   }
   renderFooter();
+  renderLibrary();
 }
 
 function header(connected) {
@@ -168,13 +172,14 @@ function header(connected) {
   }).join("");
   const busy = !!S.busy;
   const proj = menu("m-proj", ICON.more, "Проект", [
+    { act: "library", label: "Бібліотека героїв", hint: "Ctrl+L" },
     { act: "folder", label: "Відкрити папку з кадрами" },
     { act: "rescan", label: "Пересканувати проект", hint: "знайти нові шари (без тегу _cc-)", dis: busy },
     { act: "settings", label: "Налаштування" },
   ], "icon-btn");
   return `<header><span class="brand">Tintr</span><span class="proj">${esc(S.project.name)}</span>
     <nav class="steps" aria-label="Кроки">${steps}</nav><div class="grow"></div>
-    ${layers().length ? allClipsMenu() : ""}
+    ${heroesButton()}${layers().length ? allClipsMenu() : ""}
     <span class="spend">Витрачено на проект ${money(S.cost.project)}</span>${proj}</header>`;
 }
 
@@ -895,6 +900,32 @@ async function onClick(e) {
     case "menu": toggleMenu(b.dataset.menu); break;
     case "connect": doConnect(); break;
     case "settings": openSettings(); break;
+    case "library": openLibrary(true); break;
+    case "lib-close": openLibrary(false); break;
+    case "lib-add": REMOTE ? pickHeroFiles(true, (files) => uploadHeroes(files)) : call("library_add"); break;
+    case "lib-label-all": {
+      const n = S.heroes.filter((h) => !h.labeled).length;
+      if (n && await confirmCost(`Модель якоря підпише частини ${n} геро${n === 1 ? "я" : "їв"} бібліотеки, паралельно (по одному запиту на героя).`, n * S.estLabel)) call("library_label", null);
+      break;
+    }
+    case "hero-label": {
+      const h = heroById(b.dataset.hero);
+      if (h && await confirmCost(`Модель якоря підпише частини героя ${h.name} (один запит).` + (h.labeled ? " Поточні підписи буде замінено." : ""), S.estLabel)) call("library_label", [h.id]);
+      break;
+    }
+    case "hero-rename": ui.libRename = b.dataset.hero; renderLibrary(); break;
+    case "hero-replace":
+      if (REMOTE) pickHeroFiles(false, (files) => files[0] && call("library_replace", b.dataset.hero, files[0].name, files[0].data));
+      else call("library_replace", b.dataset.hero);
+      break;
+    case "hero-reveal": call("library_reveal", b.dataset.hero); break;
+    case "hero-remove": {
+      const h = heroById(b.dataset.hero);
+      if (h && await confirmDialog("Видалити героя?", h.layers
+        ? `Герой ${h.name} зникне з бібліотеки, а ${h.layers} шар(ів) залишаться без референсу. Вже розфарбовані кадри не зміняться.`
+        : `Герой ${h.name} зникне з бібліотеки разом із підписами.`, "Видалити")) call("library_remove", h.id);
+      break;
+    }
     case "folder": call("open_folder"); break;
     case "log": toggleLog(); break;
     case "view": ui.view = b.dataset.view; closePopover(); render(); break;
@@ -1396,8 +1427,13 @@ document.addEventListener("mousedown", (e) => {
   if (!$("#popover").hidden && !e.target.closest("#popover") && !e.target.closest("#frame") && e.button !== 2) closePopover();
 });
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && ui.libOpen && $("#modal").hidden) {
+    if (ui.libRename) { ui.libRename = null; renderLibrary(); } else if (document.querySelector(".menu:not([hidden])")) closeMenus(); else openLibrary(false);
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.code === "KeyL" && S && S.connected) { e.preventDefault(); openLibrary(!ui.libOpen); return; }
   if (e.key === "Escape") { closeMenus(); closePopover(); closeModal(); toggleAnchor(false); toggleRef(false); togglePipette(false); if (ui.help) toggleHelp(false); return; }
-  if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden) return;
+  if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden || ui.libOpen) return;
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") { e.preventDefault(); undoRedo(e.shiftKey); return; }  // strokes and region colours
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyY") { e.preventDefault(); undoRedo(true); return; }
   if (e.ctrlKey || e.altKey || e.metaKey) return;
@@ -1464,6 +1500,154 @@ function confirmCost(what, usd) {
     $("#m-no").onclick = () => { closeModal(); resolve(false); };
   });
 }
+
+function confirmDialog(title, text, ok = "Продовжити") {
+  return new Promise((resolve) => {
+    modal(`<div class="dialog" role="dialog" aria-label="${esc(title)}"><h2>${esc(title)}</h2><p>${esc(text)}</p>
+      <div class="actions"><button class="btn" id="m-no">Скасувати</button><button class="btn primary" id="m-yes">${esc(ok)}</button></div></div>`);
+    $("#m-yes").onclick = () => { closeModal(); resolve(true); };
+    $("#m-no").onclick = () => { closeModal(); resolve(false); };
+  });
+}
+
+// ---------- hero library: references of the project's characters, added at once and labelled once
+const heroById = (id) => (S.heroes || []).find((h) => h.id === id) || null;
+const LABELING = "Підписування героїв";
+
+function heroesButton() {
+  const hs = S.heroes || [], todo = hs.filter((h) => !h.labeled).length;
+  return `<button class="hero-btn" data-act="library" title="Бібліотека героїв проекту · Ctrl+L">${ICON.heroes}<span>Герої</span>
+    <span class="count">${hs.length}</span>${todo ? `<span class="todo-dot" title="Без підписів: ${todo}"></span>` : ""}</button>`;
+}
+
+function openLibrary(on) {
+  ui.libOpen = on;
+  ui.libRename = null;
+  closeMenus();
+  renderLibrary();
+  if (on) $("#lib .lib-search")?.focus();
+}
+
+function heroStatus(h) {
+  if (S.busy === LABELING && !h.labeled) return `<span class="pill run"><span class="dot"></span>аналіз…</span>`;
+  if (h.labeled) return `<span class="pill ok"><span class="dot"></span>підписано ${h.parts} · ${"$" + h.cost.toFixed(3)}</span>`;
+  if (h.error) return `<button class="pill err" data-act="hero-label" data-hero="${h.id}" title="${esc(h.error)}">помилка · повторити</button>`;
+  return `<span class="pill new">не проаналізовано</span>`;
+}
+
+function heroCard(h) {
+  const dis = S.busy ? "disabled" : "";
+  const used = h.layers ? `${h.layers} шар(ів)` : "не використано";
+  const name = ui.libRename === h.id
+    ? `<input class="hero-rename" id="hero-rename" value="${esc(h.name)}" data-hero="${h.id}" aria-label="Імʼя героя" spellcheck="false">`
+    : `<b title="${esc(h.name)}">${esc(h.name)}</b>`;
+  const more = menu(`hm-${h.id}`, ICON.more, `Дії з ${h.name}`, [
+    { act: "hero-rename", label: "Перейменувати", attrs: `data-hero="${h.id}"`, dis },
+    { act: "hero-replace", label: "Замінити файл…", hint: "підписи буде скинуто", attrs: `data-hero="${h.id}"`, dis },
+    { act: "hero-label", label: h.labeled ? "Проаналізувати заново" : "Проаналізувати", hint: `~${money(S.estLabel)}`, attrs: `data-hero="${h.id}"`, dis },
+    ...(REMOTE ? [] : [{ act: "hero-reveal", label: "Показати у провіднику", attrs: `data-hero="${h.id}"` }]),
+    { act: "hero-remove", label: h.layers ? `Видалити (зніметься з ${h.layers} шар.)` : "Видалити", attrs: `data-hero="${h.id}"`, dis },
+  ], "hero-more", "hero-menu");
+  return `<div class="hero-card" data-name="${esc(h.name.toLowerCase())}">
+    <div class="hero-thumb"><img src="${h.url}" alt="${esc(h.name)}" loading="lazy"></div>
+    <div class="hero-meta"><div class="hero-name">${name}${more}</div>
+      <div class="hero-row">${heroStatus(h)}</div>
+      <div class="hero-row"><span class="hero-file">${esc(h.file)}</span><span>${used}</span></div></div></div>`;
+}
+
+function renderLibrary() {
+  const el = $("#lib");
+  if (!el) return;
+  if (!ui.libOpen || !S || !S.connected) { el.hidden = true; el.innerHTML = ""; return; }
+  const hs = S.heroes || [], todo = hs.filter((h) => !h.labeled).length, running = S.busy === LABELING;
+  const focused = document.activeElement && document.activeElement.id === "lib-q";
+  const p = S.progress || {};
+  const head = `<div class="lib-head"><h2>Бібліотека героїв</h2>
+    <span class="lib-sub">${hs.length ? `${hs.length} геро${hs.length === 1 ? "й" : "їв"} · ${hs.length - todo} підписано` : "порожня"}</span>
+    <span class="grow"></span><button class="icon-btn" data-act="lib-close" aria-label="Закрити" title="Закрити · Esc">✕</button></div>`;
+  const drop = (big) => `<div class="lib-drop ${big ? "big" : ""}" id="lib-drop">
+    ${big ? `<b>Перетягніть сюди референси персонажів</b><span>PNG, JPG або WEBP, можна багато файлів одразу. Імʼя файлу стане імʼям героя.</span>` : "<span>Перетягніть ще референси сюди або</span>"}
+    <button class="btn ${big ? "primary" : "sm"}" data-act="lib-add" ${S.busy ? "disabled" : ""}>Обрати файли…</button>
+    <small>${big ? "Шари, чиї імена збігаються з іменами файлів, отримають героя автоматично." : "Файл з іменем наявного героя замінить його картинку, підписи скинуться."}</small></div>`;
+  let body;
+  if (!hs.length) body = `<div class="lib-body empty">${drop(true)}</div>`;
+  else {
+    body = `<div class="lib-tools"><input class="lib-search" id="lib-q" placeholder="Пошук героя" aria-label="Пошук героя" value="${esc(ui.libQuery)}" spellcheck="false">
+      <span class="grow"></span>
+      ${running ? `<button class="btn" data-act="stop">Зупинити</button>`
+        : todo ? `<span class="lib-est">${todo} без підписів · ≈ ${money(todo * S.estLabel)}</span>
+          <button class="btn primary" data-act="lib-label-all" ${S.busy ? "disabled" : ""}>Проаналізувати всі (${todo})</button>` : `<span class="lib-est">Усі герої підписані</span>`}</div>
+      <div class="lib-body">${drop(false)}<div class="hero-grid" id="hero-grid">${hs.map(heroCard).join("")}</div></div>`;
+  }
+  const foot = `<div class="lib-foot">${running ? `<span>Підписування героїв: ${p.n || 0} з ${p.total || todo}</span>
+      <div class="bar"><div style="width:${p.total ? Math.round((100 * p.n) / p.total) : 0}%"></div></div><span>Сесія ${money(S.cost.session)}</span>` : ""}
+    <span class="grow"></span><button class="btn" data-act="lib-close">Готово</button></div>`;
+  el.innerHTML = `<div class="lib" role="dialog" aria-label="Бібліотека героїв">${head}${body}${foot}</div>`;
+  el.hidden = false;
+  filterHeroes();
+  const q = $("#lib-q");
+  if (q) {
+    q.addEventListener("input", () => { ui.libQuery = q.value; filterHeroes(); });
+    if (focused) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); }
+  }
+  const rn = $("#hero-rename");
+  if (rn) {
+    rn.focus(); rn.select();
+    const done = async (save) => {
+      if (ui.libRename !== rn.dataset.hero) return;
+      ui.libRename = null;
+      const v = rn.value.trim();
+      if (save && v && v !== heroById(rn.dataset.hero)?.name) await call("library_rename", rn.dataset.hero, v);
+      else renderLibrary();
+    };
+    rn.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); done(true); } else if (e.key === "Escape") { e.stopPropagation(); done(false); } });
+    rn.addEventListener("blur", () => done(true));
+  }
+}
+
+function filterHeroes() {
+  const q = ui.libQuery.trim().toLowerCase();
+  for (const c of document.querySelectorAll("#hero-grid .hero-card")) c.hidden = !!q && !c.dataset.name.includes(q);
+}
+
+function readFiles(list) {
+  const files = [...list].filter((f) => /\.(png|jpe?g|webp)$/i.test(f.name));
+  return Promise.all(files.map((f) => new Promise((resolve) => {
+    const rd = new FileReader();
+    rd.onload = () => resolve({ name: f.name, data: String(rd.result).split(",")[1] });
+    rd.readAsDataURL(f);
+  })));
+}
+
+function pickHeroFiles(multiple, then) {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.multiple = multiple;
+  inp.accept = ".png,.jpg,.jpeg,.webp";
+  inp.onchange = async () => then(await readFiles(inp.files));
+  inp.click();
+}
+
+async function uploadHeroes(files) {
+  if (!files.length) { modal(errorDialog("Не вдалося", "Референс має бути PNG, JPG або WEBP.")); return; }
+  await call("library_upload", files);
+}
+
+// files dropped on the window: never let the webview navigate to them; on the library they become heroes
+document.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  const d = $("#lib-drop");
+  if (d) d.classList.toggle("hot", ui.libOpen);
+});
+document.addEventListener("dragleave", (e) => { if (!e.relatedTarget) $("#lib-drop")?.classList.remove("hot"); });
+document.addEventListener("drop", async (e) => {
+  e.preventDefault();
+  $("#lib-drop")?.classList.remove("hot");
+  if (!S || !S.connected || !e.dataTransfer || !e.dataTransfer.files.length) return;
+  if (S.busy) { modal(errorDialog("Не вдалося", `Зачекайте: виконується «${S.busy}».`)); return; }
+  if (!ui.libOpen) openLibrary(true);
+  uploadHeroes(await readFiles(e.dataTransfer.files));
+});
 
 // model choice: a list of tested-for-availability models + "other" (any OpenRouter vision model id)
 function modelPicker(id, label, list, cur) {
@@ -1547,6 +1731,7 @@ function uploadRef(uid) {
 
 // ------------------------------------------------------------------ boot
 async function boot() {
+  $("#lib").onclick = onClick;
   setState(await api().get_state());
   if (!S.connected && !S.busy) { ui.quietConnect = true; api().connect(null, false); }  // quiet first attempt
 }
