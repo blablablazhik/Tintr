@@ -71,6 +71,10 @@ class LayerEntry:
     ref_labels: list = field(default_factory=list)
     ref_labeled_file: str = ""
     ref_labels_mtime: float = 0.0
+    # hero of the project library this layer takes its reference (and labels) from; "" = its own file.
+    # hero_auto: picked by name match, not by the user
+    hero_id: str = ""
+    hero_auto: bool = False
     keys: list[KeyFrame] = field(default_factory=list)
 
     @property

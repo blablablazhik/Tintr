@@ -69,6 +69,8 @@ class Pipeline:
             e.missing = bridge.layer_name(e.clip_id, e.layer_id) is None
             if e.missing:
                 missing.append(e.layer_name)
+        self.sync_heroes()
+        self.auto_assign_heroes()
         self._restore_outputs()
         self.manifest.save()
         when = self.manifest.scanned_at.replace("T", " ")[:16]
@@ -100,13 +102,14 @@ class Pipeline:
             if prev:  # keep everything the user already decided / paid for
                 for attr in ("ref_path", "color_layer_id", "enabled", "anchor_idx", "anchor_approved",
                              "anchor_version", "anchor_approved_mapping", "extra_colors",
-                             "ref_labels", "ref_labeled_file", "ref_labels_mtime"):
+                             "ref_labels", "ref_labeled_file", "ref_labels_mtime", "hero_id", "hero_auto"):
                     setattr(e, attr, getattr(prev, attr))
                 e.keys = prev.keys
             self._merge_keys(e, f.instances)
             new[uid] = e
         self.manifest.layers = new
         self.manifest.scanned_at = datetime.now().isoformat(timespec="seconds")
+        self.auto_assign_heroes()
         self._restore_outputs()
         self.manifest.save()
         self.log(f"Знайдено шарів: {len(new)} ({time.time() - t:.1f}s).")
@@ -446,6 +449,57 @@ class Pipeline:
         self.log(f"  ✓ {e.layer_name}: підписано частин — {len(labels)} · ${cost:.3f}")
 
     # ---------------------------------------------------------------- hero library
+    def heroes_of(self, hero_id: str) -> list[M.LayerEntry]:
+        return [e for e in self.manifest.layers.values() if e.hero_id == hero_id] if self.manifest else []
+
+    def _apply_hero(self, e: M.LayerEntry, h: L.Hero | None) -> None:
+        """The layer's reference and labels = the hero's (h=None: the layer has no reference any more)."""
+        if h is None:
+            e.hero_id, e.hero_auto, e.ref_path = "", False, ""
+            self.clear_ref_labels(e)
+            return
+        e.hero_id, e.ref_path = h.id, str(self.library.path(h))
+        if self.library.is_labeled(h):
+            e.ref_labels, e.ref_labeled_file, e.ref_labels_mtime = h.labels, h.labeled_file, h.labels_mtime
+        else:
+            self.clear_ref_labels(e)
+
+    def sync_heroes(self) -> None:
+        """Layers that use a hero follow its current picture and labels; a removed hero leaves them empty."""
+        if not (self.manifest and self.library):
+            return
+        for e in self.manifest.layers.values():
+            if e.hero_id:
+                self._apply_hero(e, self.library.heroes.get(e.hero_id))
+
+    def assign_hero(self, e: M.LayerEntry, h: L.Hero | None, auto: bool = False) -> None:
+        """Give the layer a hero of the library (h=None: take it off). Existing fills are redrawn
+        from the saved answers with the new palette."""
+        had = e.ref_path
+        self._apply_hero(e, h)
+        e.hero_auto = bool(h and auto)
+        self.manifest.save()
+        if e.ref_path != had and any(k.vlm_mapping for k in e.keys):
+            self.log("  референс змінено — заливки перемальовано зі збережених відповідей")
+            self.refill_all()
+
+    def auto_assign_heroes(self) -> list[M.LayerEntry]:
+        """Layers without a reference get the hero whose name matches the layer name (Ricky_1 ↔ Ricky_1.png)."""
+        if not (self.manifest and self.library and self.library.heroes):
+            return []
+        got = []
+        for e in self.manifest.layers.values():
+            if e.hero_id or self.has_ref(e):
+                continue
+            if h := self.library.match(e.layer_name):
+                self._apply_hero(e, h)
+                e.hero_auto = True
+                got.append(e)
+                self.log(f"  {e.layer_name}: герой «{h.name}» (за іменем шару)")
+        if got:
+            self.manifest.save()
+        return got
+
     def label_heroes(self, ids: list[str] | None = None) -> None:
         """Label heroes of the library in parallel (cfg.concurrency): the given ids, or (None) every hero
         without labels. A failed hero keeps its error and the others go on."""
@@ -483,6 +537,8 @@ class Pipeline:
                     self.log(f"  ✗ {h.name}: {ex}")
                 done[0] += 1
                 lib.save()
+                self.sync_heroes()  # layers of the hero get its labels right away
+                self.manifest.save()
                 self.progress(done[0], len(heroes), "Підписування героїв")
         if self.cancel.is_set():
             raise Cancelled()
