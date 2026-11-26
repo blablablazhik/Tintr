@@ -21,6 +21,7 @@ const ui = {
   overRef: false,                    // the cursor is over the reference (I = pipette into the palette there)
   libOpen: false, libQuery: "",      // hero library window
   libRename: null,                   // id of the hero whose name is being edited
+  heroPop: false, heroQuery: "",     // the layer's hero list (right panel), opened over the reference
 };
 
 const REMOTE = !!window.TINTR_REMOTE;
@@ -205,7 +206,10 @@ function closeMenus() {
     m.previousElementSibling.setAttribute("aria-expanded", "false");
   }
 }
-document.addEventListener("mousedown", (e) => { if (!e.target.closest(".menu-wrap")) closeMenus(); });
+document.addEventListener("mousedown", (e) => {
+  if (!e.target.closest(".menu-wrap")) closeMenus();
+  if (ui.heroPop && !e.target.closest(".pick-wrap") && !e.target.closest('[data-act="hero-pop"]')) showHeroPop(false);
+});
 
 function footer() {
   return `<footer><span class="last" id="f-last"></span><div class="fbar" id="f-bar" hidden><div class="bar"><div id="f-bar-in" style="width:0"></div></div></div>
@@ -696,16 +700,57 @@ function sideView() {
   const ref = l.refUrl
     ? `<div class="ref ref-pick zoomable ${ui.pipette ? "picking" : ""}" data-zoom="ref" id="ref"><div class="zoom"><img src="${l.refLabeledUrl || l.refUrl}"
          alt="Референс ${esc(l.name)}${l.refLabeledUrl ? " з підписами частин" : ""}"></div></div>
-       <span class="ref-name">${esc(l.ref)} · <kbd>R</kbd> ${l.refLabeledUrl ? "без підписів " : ""}на весь кадр</span>
        ${refLabelsView(l)}
        <div class="pal-head"><span class="eyebrow">Палітра · ${l.palette.length}</span><span class="pal-note" id="pal-note">${esc(ui.palNote)}</span></div>
        <div class="palette" id="palette">${l.palette.map((p) => `<span class="${p.extra ? "extra" : ""}" data-name="${p.name}" style="background:${p.hex}"
          title="${p.name} ${p.hex}${p.extra ? " · додано вручну · права кнопка — видалити" : ""}"></span>`).join("")}${palAddView()}</div>`
-    : `<div class="ref none"><span>Референс не вибрано</span><button class="btn primary" data-act="ref">Оберіть референс</button></div>`;
+    : `<div class="hero-miss">Для шару «${esc(l.name)}» немає героя з таким іменем. Оберіть героя вище або додайте референс у бібліотеку.</div>`;
   return `<aside class="side"><div class="action" id="action">${actionView(l)}</div>
-    <div class="side-head"><span class="eyebrow">Референс · ${esc(l.name)}</span>
-    ${l.refUrl ? `<button class="link" data-act="ref" ${S.busy ? "disabled" : ""}>Змінити</button>` : ""}</div>
+    <div class="side-head"><span class="eyebrow">Герой · ${esc(l.name)}</span>
+    <button class="link" data-act="library">Відкрити бібліотеку</button></div>
+    ${heroPicker(l)}
     ${ref}</aside>`;
+}
+
+// the layer's hero: one row; the list opens over the reference and folds up after a pick
+function heroPicker(l) {
+  const h = l.heroId ? heroById(l.heroId) : null;
+  const dis = S.busy ? "disabled" : "";
+  const thumb = h ? h.url : l.refUrl;
+  const row = h
+    ? `<span class="t"><b>${esc(h.name)}</b><span>${h.labeled ? `підписано частин: ${h.parts}` : "без підписів"}</span></span>
+       ${l.heroAuto ? `<span class="pill auto" title="Підставлено, бо імʼя шару збігається з іменем героя">авто</span>` : ""}`
+    : l.refUrl
+      ? `<span class="t"><b>${esc(l.ref)}</b><span>свій файл, поза бібліотекою</span></span>`
+      : `<span class="t"><b>Оберіть героя</b><span>з бібліотеки проекту</span></span>`;
+  const hs = S.heroes || [];
+  const list = hs.length
+    ? hs.map((x) => `<button class="hero-opt ${x.id === l.heroId ? "on" : ""}" data-act="pick-hero" data-hero="${x.id}" data-name="${esc(x.name.toLowerCase())}" ${dis}>
+        <span class="mini"><img src="${x.url}" alt=""></span><span class="t"><b>${esc(x.name)}</b>
+        <span>${x.labeled ? `підписано ${x.parts}` : x.error ? "помилка аналізу" : "не проаналізовано"}</span></span></button>`).join("")
+    : `<span class="hero-empty">Бібліотека порожня. Додайте референси персонажів.</span>`;
+  return `<div class="pick-wrap">
+    <button class="picker-btn" data-act="hero-pop" aria-expanded="${ui.heroPop}" aria-haspopup="listbox">
+      ${thumb ? `<span class="mini"><img src="${thumb}" alt=""></span>` : ""}${row}<span class="chev" aria-hidden="true">▾</span></button>
+    <div class="hero-pop" id="hero-pop" ${ui.heroPop ? "" : "hidden"}>
+      ${hs.length > 5 ? `<input class="lib-search" id="hero-q" placeholder="Пошук у бібліотеці" aria-label="Пошук у бібліотеці" value="${esc(ui.heroQuery)}" spellcheck="false">` : ""}
+      <div class="hero-list" role="listbox" aria-label="Герої бібліотеки">${list}</div>
+      <div class="hero-pop-actions"><button class="btn sm" data-act="ref" ${dis}>Інший файл…</button>
+        <button class="btn sm" data-act="lib-add" ${dis}>+ Додати в бібліотеку</button></div></div></div>`;
+}
+
+function showHeroPop(on) {
+  ui.heroPop = on;
+  const pop = $("#hero-pop");
+  if (!pop) return;
+  pop.hidden = !on;
+  $(".picker-btn")?.setAttribute("aria-expanded", on);
+  if (on) { filterHeroOpts(); $("#hero-q")?.focus(); }
+}
+
+function filterHeroOpts() {
+  const q = ui.heroQuery.trim().toLowerCase();
+  for (const o of document.querySelectorAll(".hero-list .hero-opt")) o.hidden = !!q && !o.dataset.name.includes(q);
 }
 
 function palAddView() {
@@ -762,10 +807,10 @@ function bindPalAdd(at = "pal") {
 function refLabelsView(l) {
   // the parts of the reference labelled by the anchor model: the follow keys are coloured by these labels
   const dis = S.busy ? "disabled" : "";
-  if (S.busy === "Підписування референсу") return `<div class="ref-labels"><span class="spin" aria-hidden="true"></span><span>Модель підписує частини…</span></div>`;
+  if (S.busy === "Підписування референсу" || (S.busy === LABELING && l.heroId)) return `<div class="ref-labels"><span class="spin" aria-hidden="true"></span><span>Модель підписує частини…</span></div>`;
   if (l.refLabeledUrl) return `<div class="ref-labels"><span>Підписано: ${l.refLabelsN}</span><span class="grow"></span>
     <button class="link" data-act="label-ref" ${dis} title="Підписати частини заново (LLM)">Заново</button>
-    <button class="link" data-act="unlabel-ref" ${dis} title="Прибрати підписи: кадри за якорем знову підуть із зображеннями якоря">Прибрати</button></div>`;
+    ${l.heroId ? "" : `<button class="link" data-act="unlabel-ref" ${dis} title="Прибрати підписи: кадри за якорем знову підуть із зображеннями якоря">Прибрати</button>`}</div>`;
   return `<div class="ref-labels"><button class="btn sm" data-act="label-ref" ${dis}
     title="Модель якоря назве частини персонажа на референсі. Кадри за якорем розфарбовуються за цими підписами — точніше й дешевше">Підписати частини (LLM)</button></div>`;
 }
@@ -783,8 +828,8 @@ function actionView(l) {
       return `<b>Ключі не виведено</b><p>Виведіть ключові кадри з TVPaint, щоб почати.</p>
         <button class="btn primary" data-act="export" ${dis}>Вивести ключі</button>`;
     case "ref":
-      return `<b>Потрібен референс</b><p>Оберіть зображення персонажа в кольорі. З нього береться палітра.</p>
-        <button class="btn primary" data-act="ref" ${dis}>Оберіть референс</button>`;
+      return `<b>Потрібен герой</b><p>Оберіть героя з бібліотеки проекту. З його референсу береться палітра.</p>
+        <button class="btn primary" data-act="hero-pop" ${dis}>Обрати героя</button>`;
     case "anchor":
       return `<b>Якір: ключ #${a ? a.idx : "–"}</b><p>Якір розфарбовується першим і задає кольори для решти кадрів. Найкраще підходить кадр, де персонаж видно повністю. Щоб змінити якір, виберіть інший кадр.</p>
         <button class="btn primary" data-act="color-anchor" ${dis}>Розфарбувати якір · ~${money(S.est)}</button>`;
@@ -876,6 +921,9 @@ function bindMain() {
   for (const img of document.querySelectorAll("#stage img")) img.addEventListener("load", fitFrames, { once: true });
   for (const el of document.querySelectorAll("#app [data-zoom]")) bindZoomable(el.dataset.zoom);
   bindPipette();
+  const hq = $("#hero-q");
+  if (hq) hq.addEventListener("input", () => { ui.heroQuery = hq.value; filterHeroOpts(); });
+  filterHeroOpts();
   fitFrames();
   applyAllZooms();
   const strip = $("#strip");
@@ -902,7 +950,7 @@ async function onClick(e) {
     case "settings": openSettings(); break;
     case "library": openLibrary(true); break;
     case "lib-close": openLibrary(false); break;
-    case "lib-add": REMOTE ? pickHeroFiles(true, (files) => uploadHeroes(files)) : call("library_add"); break;
+    case "lib-add": showHeroPop(false); REMOTE ? pickHeroFiles(true, (files) => uploadHeroes(files)) : call("library_add"); break;
     case "lib-label-all": {
       const n = S.heroes.filter((h) => !h.labeled).length;
       if (n && await confirmCost(`Модель якоря підпише частини ${n} геро${n === 1 ? "я" : "їв"} бібліотеки, паралельно (по одному запиту на героя).`, n * S.estLabel)) call("library_label", null);
@@ -929,7 +977,7 @@ async function onClick(e) {
     case "folder": call("open_folder"); break;
     case "log": toggleLog(); break;
     case "view": ui.view = b.dataset.view; closePopover(); render(); break;
-    case "layer": ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; ui.showAnchor = false; ui.showRef = false; ui.pipette = false; closePopover(); render(); break;
+    case "layer": ui.heroPop = false; ui.uid = b.dataset.uid; ui.idx = null; ui.view = "main"; ui.zooms = {}; ui.showAnchor = false; ui.showRef = false; ui.pipette = false; closePopover(); render(); break;
     case "zoom": zoomCmd(b.dataset.z); break;
     case "lines": toggleLines(); break;
     case "pipette": togglePipette(); break;
@@ -956,7 +1004,9 @@ async function onClick(e) {
     case "mode": ui.mode = b.dataset.mode; closePopover(); render(); break;
     case "rescan": call("connect", null, true); break;
     case "export": call("export"); break;
-    case "ref": REMOTE ? uploadRef(l.uid) : call("pick_ref", l.uid); break;
+    case "ref": showHeroPop(false); REMOTE ? uploadRef(l.uid) : call("pick_ref", l.uid); break;
+    case "hero-pop": showHeroPop(!ui.heroPop); break;
+    case "pick-hero": showHeroPop(false); ui.heroQuery = ""; if (b.dataset.hero !== l.heroId) call("set_hero", l.uid, b.dataset.hero); break;
     case "label-ref":
       if (await confirmCost(`Модель якоря підпише частини на референсі шару ${l.name} (один запит).`
         + (l.refLabeledUrl ? " Поточні підписи буде замінено." : ""), S.estLabel)) call("label_ref", l.uid);
@@ -1432,6 +1482,7 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyL" && S && S.connected) { e.preventDefault(); openLibrary(!ui.libOpen); return; }
+  if (e.key === "Escape" && ui.heroPop) { showHeroPop(false); return; }
   if (e.key === "Escape") { closeMenus(); closePopover(); closeModal(); toggleAnchor(false); toggleRef(false); togglePipette(false); if (ui.help) toggleHelp(false); return; }
   if ((e.target.closest && e.target.closest("input, textarea, select")) || !$("#modal").hidden || ui.libOpen) return;
   if ((e.ctrlKey || e.metaKey) && e.code === "KeyZ") { e.preventDefault(); undoRedo(e.shiftKey); return; }  // strokes and region colours
