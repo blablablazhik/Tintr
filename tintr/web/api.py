@@ -220,6 +220,7 @@ class Api:
             # the reference with the parts labelled (side panel; the stage view R shows the plain one)
             "refLabeledUrl": self._url(labeled, 900) if (labeled := self._pl.labeled_ref(e)) else "",
             "refLabelsN": len(e.ref_labels) if labeled else 0,
+            "heroId": e.hero_id, "heroAuto": e.hero_auto,
             "palette": pal, "swatch": self._swatch(pal),
             "followsN": n_follow, "keys": keys,
             "keysN": sum(1 for k in e.masters() if k.key_file and not (a and k.idx == a.idx)),
@@ -259,7 +260,25 @@ class Api:
         st["allAnchors"] = sum(1 for e, _ in self._pl.pending_anchors() if self._pl.has_ref(e))
         st["allFollows"] = sum(1 for e, _ in self._pl.pending_follows() if self._pl.has_ref(e))
         st["awaiting"] = len(self._pl.awaiting_approval())
+        st["heroes"] = self._heroes()
         return st
+
+    def _heroes(self) -> list[dict]:
+        lib = self._pl.library
+        if not lib:
+            return []
+        used: dict[str, int] = {}
+        for e in self._pl.manifest.layers.values():
+            if e.hero_id:
+                used[e.hero_id] = used.get(e.hero_id, 0) + 1
+        out = []
+        for h in lib.sorted():
+            lab = lib.labeled_path(h)
+            out.append({"id": h.id, "name": h.name, "file": h.file, "url": self._url(lib.path(h), 400),
+                        "labeledUrl": self._url(lab, 400) if lab else "", "labeled": bool(lab),
+                        "parts": len(h.labels) if lab else 0, "cost": h.cost, "error": h.error,
+                        "layers": used.get(h.id, 0)})
+        return out
 
     # ------------------------------------------------------------------ recent projects
     def _recent_file(self) -> Path:
@@ -308,10 +327,13 @@ class Api:
         return self._task("Розфарбовування якоря", lambda: self._pl.colorize_anchors(uid, force))
 
     def label_ref(self, uid: str) -> dict:
-        """The anchor model labels the parts of the layer's reference (one request)."""
+        """The anchor model labels the parts of the layer's reference (one request). A layer with a library
+        hero labels the hero, so every layer of that hero gets the labels."""
         if not get_api_key():
             return {"ok": False, "error": "Задайте fal.ai API key у налаштуваннях."}
         e = self._entry(uid)
+        if e.hero_id:
+            return self._task("Підписування героїв", lambda: self._pl.label_heroes([e.hero_id]))
         return self._task("Підписування референсу", lambda: self._pl.label_ref(e))
 
     def clear_ref_labels(self, uid: str) -> dict:
@@ -497,10 +519,155 @@ class Api:
         if str(path) != e.ref_path:
             self._pl.clear_ref_labels(e)  # the labels belong to the old picture
         e.ref_path = str(path)
+        e.hero_id, e.hero_auto = "", False  # an own file, outside the hero library
         self._pl.manifest.save()
         if any(k.vlm_mapping for k in e.keys):
             self._on_log("  референс змінено — заливки перемальовано зі збережених відповідей")
             self._pl.refill_all()
+        return {"ok": True, "state": self._state()}
+
+    # ---- hero library
+    _IMAGES = "Images (*.png;*.jpg;*.jpeg;*.webp)"
+
+    def _lib_guard(self) -> dict | None:
+        if g := self._guard():
+            return g
+        if not self._pl.library:
+            return {"ok": False, "error": "Спершу підключіться до проекту TVPaint."}
+        return None
+
+    def _hero(self, hero_id: str):
+        return self._pl.library.heroes[hero_id]
+
+    def _pick_files(self, multiple: bool) -> list[str]:
+        import webview
+
+        start = self._cfg.last_refs_dir or str(self._pl.manifest.project_path.parent)
+        res = self._window.create_file_dialog(webview.FileDialog.OPEN, directory=start, allow_multiple=multiple,
+                                             file_types=(self._IMAGES,))
+        if not res:
+            return []
+        paths = list(res) if isinstance(res, (list, tuple)) else [res]
+        self._cfg.last_refs_dir = str(Path(paths[0]).parent)
+        self._cfg.save()
+        return paths
+
+    def _after_heroes_changed(self, heroes: list) -> None:
+        """Layers follow the changed heroes; matching layers without a reference get theirs; fills of layers
+        whose hero got a new picture are redrawn from the saved answers."""
+        pl = self._pl
+        pl.sync_heroes()
+        pl.auto_assign_heroes()
+        pl.manifest.save()
+        ids = {h.id for h in heroes}
+        if any(k.vlm_mapping for e in pl.manifest.layers.values() if e.hero_id in ids for k in e.keys):
+            self._on_log("  референс героя змінено — заливки перемальовано зі збережених відповідей")
+            pl.refill_all()
+
+    def _add_heroes(self, items: list) -> dict:
+        lib, added, errors = self._pl.library, [], []
+        for name, src, data in items:
+            try:
+                h, replaced = lib.add(name, src, data)
+                added.append(h)
+                self._on_log(f"  бібліотека: {'оновлено' if replaced else 'додано'} героя «{h.name}»")
+            except Exception as ex:  # noqa: BLE001
+                errors.append(str(ex))
+        self._after_heroes_changed(added)
+        res = {"ok": not errors or bool(added), "state": self._state()}
+        if errors:
+            res["error"] = "; ".join(errors)
+        return res
+
+    def library_add(self) -> dict:
+        """Desktop: pick several reference files at once."""
+        if g := self._lib_guard():
+            return g
+        if self._remote:
+            return {"ok": False, "error": "У браузерному режимі референси завантажуються з цього пристрою."}
+        paths = self._pick_files(True)
+        if not paths:
+            return {"ok": False}
+        return self._add_heroes([(Path(p).name, Path(p), None) for p in paths])
+
+    def library_upload(self, files: list) -> dict:
+        """Dropped or (browser mode) uploaded files: [{"name", "data": base64}]."""
+        if g := self._lib_guard():
+            return g
+        return self._add_heroes([(f.get("name") or "hero.png", None, base64.b64decode(f.get("data") or ""))
+                                 for f in files])
+
+    def library_replace(self, hero_id: str, name: str = "", data_b64: str = "") -> dict:
+        """A new picture for a hero: from the dialog (desktop) or uploaded bytes. Its labels are dropped."""
+        if g := self._lib_guard():
+            return g
+        h = self._hero(hero_id)
+        if data_b64:
+            src, data = None, base64.b64decode(data_b64)
+        else:
+            if self._remote:
+                return {"ok": False, "error": "У браузерному режимі файл завантажується з цього пристрою."}
+            paths = self._pick_files(False)
+            if not paths:
+                return {"ok": False}
+            name, src, data = Path(paths[0]).name, Path(paths[0]), None
+        try:
+            self._pl.library.replace_file(h, name, src, data)
+        except ValueError as ex:
+            return {"ok": False, "error": str(ex)}
+        self._on_log(f"  бібліотека: нова картинка героя «{h.name}», підписи скинуто")
+        self._after_heroes_changed([h])
+        return {"ok": True, "state": self._state()}
+
+    def library_rename(self, hero_id: str, name: str) -> dict:
+        if g := self._lib_guard():
+            return g
+        try:
+            self._pl.library.rename(self._hero(hero_id), name)
+        except ValueError as ex:
+            return {"ok": False, "error": str(ex)}
+        self._pl.auto_assign_heroes()  # the new name may match a layer without a reference
+        return {"ok": True, "state": self._state()}
+
+    def library_remove(self, hero_id: str) -> dict:
+        """Remove a hero; its layers are left without a reference."""
+        if g := self._lib_guard():
+            return g
+        pl, h = self._pl, self._hero(hero_id)
+        for e in pl.heroes_of(h.id):
+            pl.assign_hero(e, None)
+        pl.library.remove(h)
+        self._on_log(f"  бібліотека: видалено героя «{h.name}»")
+        return {"ok": True, "state": self._state()}
+
+    def library_label(self, hero_ids: list | None = None) -> dict:
+        """Label the given heroes, or (None) every hero without labels, in parallel."""
+        if not get_api_key():
+            return {"ok": False, "error": "Задайте fal.ai API key у налаштуваннях."}
+        if g := self._lib_guard():
+            return g
+        return self._task("Підписування героїв", lambda: self._pl.label_heroes(hero_ids))
+
+    def library_reveal(self, hero_id: str) -> dict:
+        if g := self._lib_guard():
+            return g
+        p = self._pl.library.path(self._hero(hero_id))
+        if self._remote:
+            return {"ok": False, "error": f"Файл героя — на компі: {p}"}
+        import subprocess
+
+        subprocess.Popen(["explorer", "/select,", str(p)])  # noqa: S603, S607
+        return {"ok": True}
+
+    def set_hero(self, uid: str, hero_id: str) -> dict:
+        """The layer takes its reference from a library hero ("" = none)."""
+        if g := self._lib_guard():
+            return g
+        e = self._entry(uid)
+        h = self._hero(hero_id) if hero_id else None
+        self._pl.assign_hero(e, h)
+        if h:
+            self._on_log(f"  {_short(e.layer_name)}: герой «{h.name}»")
         return {"ok": True, "state": self._state()}
 
     def open_folder(self) -> dict:
