@@ -21,12 +21,13 @@ from PIL import Image
 from scipy import ndimage as ndi
 
 from tintr.config import Config, app_dir, get_api_key
+from tintr.core import library as L
 from tintr.core import manifest as M
 from tintr.core import reflabel as RL
 from tintr.core import vlm as V
 from tintr.core.cost import CostTracker
 from tintr.core.dedupe import assign_duplicates, pixel_hash
-from tintr.core.palette import layer_palette
+from tintr.core.palette import layer_palette, reference_palette
 from tintr.core.vlm import AuthError, Cancelled
 from tintr.naming import is_excluded, key_basename
 from tintr.tvp import bridge
@@ -44,6 +45,7 @@ class Pipeline:
         self.cancel = threading.Event()
         self.project: bridge.ProjectInfo | None = None
         self.manifest: M.Manifest | None = None
+        self.library: L.Library | None = None  # hero library of the project
         self._reg_cache: dict = {}
         # live per-key status for the UI: (layer uid, key idx, text or "" when finished)
         self.key_status: Callable[[str, int, str], None] = lambda *_: None
@@ -56,6 +58,7 @@ class Pipeline:
         self.project = bridge.current_project()
         self.log(f"Project: {self.project.path}  ({self.project.width}x{self.project.height})")
         self.manifest = M.Manifest.load(self.project.path)
+        self.library = L.Library.load(self.manifest.root)
         if rescan:
             return self.rescan()
         if not self.manifest.layers:
@@ -414,27 +417,75 @@ class Pipeline:
     def clear_ref_labels(self, e: M.LayerEntry) -> None:
         e.ref_labels, e.ref_labeled_file, e.ref_labels_mtime = [], "", 0.0
 
-    def label_ref(self, e: M.LayerEntry) -> None:
-        """The anchor model names the parts of the reference; the labels are drawn on a copy of it."""
-        if not self.has_ref(e):
-            raise ValueError("Спершу оберіть референс.")
+    def _label(self, ref: Path, pal, out_rel: str, clip: str, layer: str) -> tuple[list, float]:
+        """The anchor model names the parts of a reference; the labels are drawn on a copy of it
+        (out_rel, relative to the manifest root). One request, recorded in the cost log."""
         c = self.cfg
         vlm = V.VLMColorizer(get_api_key(), c.vlm_model, self.cancel, reasoning=c.vlm_reasoning,
                              log=self.log, url_cache=app_dir() / "upload_cache.json")
-        self.log(f"Підписування референсу {e.layer_name}: {c.vlm_model}")
+        labels, cost = vlm.label_reference(ref, pal, layer)
+        rgb, mask = RL.load_rgb(ref)
+        (self.manifest.root / out_rel).parent.mkdir(parents=True, exist_ok=True)
+        RL.render(rgb, mask, labels).save(self.manifest.root / out_rel)
+        self.cost.record(project=str(self.project.path), clip=clip, layer=layer, frame=-1,
+                         model=c.vlm_model, usd=cost)
+        return labels, cost
+
+    def label_ref(self, e: M.LayerEntry) -> None:
+        """Label the layer's own reference (one picked outside the hero library)."""
+        if not self.has_ref(e):
+            raise ValueError("Спершу оберіть референс.")
+        self.log(f"Підписування референсу {e.layer_name}: {self.cfg.vlm_model}")
         ref = Path(e.ref_path)
         self.progress(0, 1, "Підписування референсу")
-        labels, cost = vlm.label_reference(ref, self.palette(e), e.layer_name)
-        rgb, mask = RL.load_rgb(ref)
         name = f"refs/labels_{e.clip_id}_{e.layer_id}.png"
-        (self.manifest.root / "refs").mkdir(parents=True, exist_ok=True)
-        RL.render(rgb, mask, labels).save(self.manifest.root / name)
+        labels, cost = self._label(ref, self.palette(e), name, e.clip_name, e.layer_name)
         e.ref_labels, e.ref_labeled_file, e.ref_labels_mtime = labels, name, ref.stat().st_mtime
-        self.cost.record(project=str(self.project.path), clip=e.clip_name, layer=e.layer_name, frame=-1,
-                         model=c.vlm_model, usd=cost)
         self.manifest.save()
         self.progress(1, 1, "Підписування референсу")
         self.log(f"  ✓ {e.layer_name}: підписано частин — {len(labels)} · ${cost:.3f}")
+
+    # ---------------------------------------------------------------- hero library
+    def label_heroes(self, ids: list[str] | None = None) -> None:
+        """Label heroes of the library in parallel (cfg.concurrency): the given ids, or (None) every hero
+        without labels. A failed hero keeps its error and the others go on."""
+        lib = self.library
+        heroes = ([lib.heroes[i] for i in ids if i in lib.heroes] if ids is not None
+                  else [h for h in lib.sorted() if not lib.is_labeled(h)])
+        if not heroes:
+            self.log("Усі герої вже підписані.")
+            return
+        self.log(f"Підписування героїв: {len(heroes)} · {self.cfg.vlm_model}")
+        done = [0]
+        self.progress(0, len(heroes), "Підписування героїв")
+
+        def run(h: L.Hero):
+            if self.cancel.is_set():
+                raise Cancelled()
+            ref = lib.path(h)
+            name = f"library/labels_{h.id}.png"
+            labels, cost = self._label(ref, reference_palette(ref), name, "library", h.name)
+            h.labels, h.labeled_file, h.labels_mtime, h.error = labels, name, ref.stat().st_mtime, ""
+            h.cost += cost
+            return cost
+
+        with ThreadPoolExecutor(max_workers=max(1, int(self.cfg.concurrency))) as pool:
+            futs = {pool.submit(run, h): h for h in heroes}
+            for f in as_completed(futs):
+                h = futs[f]
+                try:
+                    cost = f.result()
+                    self.log(f"  ✓ {h.name}: підписано частин — {len(h.labels)} · ${cost:.3f}")
+                except Cancelled:
+                    pass
+                except Exception as ex:  # noqa: BLE001
+                    h.error = str(ex)
+                    self.log(f"  ✗ {h.name}: {ex}")
+                done[0] += 1
+                lib.save()
+                self.progress(done[0], len(heroes), "Підписування героїв")
+        if self.cancel.is_set():
+            raise Cancelled()
 
     def _check_refs(self, todo: list, skip: bool) -> list:
         """One layer: a missing reference is an error. All layers: those layers are skipped (logged)."""
