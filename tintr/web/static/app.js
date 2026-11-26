@@ -169,7 +169,7 @@ function header(connected) {
   const busy = !!S.busy;
   const proj = menu("m-proj", ICON.more, "Проект", [
     { act: "folder", label: "Відкрити папку з кадрами" },
-    { act: "rescan", label: "Пересканувати проект", hint: "знайти нові шари з тегом _cc-", dis: busy },
+    { act: "rescan", label: "Пересканувати проект", hint: "знайти нові шари (без тегу _cc-)", dis: busy },
     { act: "settings", label: "Налаштування" },
   ], "icon-btn");
   return `<header><span class="brand">Tintr</span><span class="proj">${esc(S.project.name)}</span>
@@ -236,7 +236,7 @@ function connectView() {
       <span>${r.layers} шар(ів) у ${r.clips} кліп(ах) · ${money(r.usd)}</span><small>${esc(r.when)}</small></div>`).join("");
   return `<main class="connect"><div class="connect-box">
     <div style="display:flex;flex-direction:column;gap:10px"><h1>Підключіться до TVPaint</h1>
-    <p>Відкрийте проект у TVPaint з увімкненим плагіном tvpaint-rpc. Tintr знайде шари з тегом <span style="color:var(--fg)">_cc-</span> і запам'ятає їх для наступних запусків.</p></div>
+    <p>Відкрийте проект у TVPaint з увімкненим плагіном tvpaint-rpc. Tintr знайде анімаційні шари без тегу <span style="color:var(--fg)">_cc-</span> і запам'ятає їх для наступних запусків.</p></div>
     <div class="connect-row"><div class="field"><label for="port">Порт</label><input id="port" type="number" value="${esc(port)}"></div>
       <button class="btn primary" data-act="connect" ${busy ? "disabled" : ""}>${busy ? "Підключення…" : "Підключитися"}</button></div>
     ${err}
@@ -269,7 +269,7 @@ function treeView() {
       <span class="tdot tone-${l.tone} ${layerBusy(l) ? "live" : ""}" aria-label="${esc(layerState(l))}"></span>
       <span class="count">${l.done}/${l.total}</span></button>`).join("")}</div>`).join("");
   const scanned = S.project.scanned;
-  const empty = scanned ? "Шарів з тегом _cc- не знайдено." : "Проект ще не скановано.";
+  const empty = scanned ? "Шарів для розфарбування не знайдено." : "Проект ще не скановано.";
   return `<aside class="tree"><div class="tree-head"><span class="eyebrow">Кліпи</span></div>
     <div class="tree-clips">${clips || `<div style="padding:0 20px;color:var(--muted)">${empty}</div>`}</div>
     </aside>`;
@@ -303,11 +303,11 @@ function centerView() {
   if (!l) {
     const busy = S.busy ? "disabled" : "";
     const body = S.busy === "Сканування проекту"
-      ? `<b>Сканування…</b>Tintr проходить усі кліпи проекту і шукає шари з тегом _cc-. На великому проекті це може тривати.`
+      ? `<b>Сканування…</b>Tintr проходить усі кліпи проекту і шукає анімаційні шари без тегу _cc-. На великому проекті це може тривати.`
       : S.project.scanned
-        ? `<b>Шарів з тегом не знайдено</b>Додайте тег _cc- до назви шару персонажа в TVPaint і проскануйте проект знову.
+        ? `<b>Шарів для розфарбування не знайдено</b>Tintr бере анімаційні шари без тегу _cc- (тег означає «не фарбувати»). Перевірте назви шарів у TVPaint і проскануйте проект знову.
            <button class="btn primary" data-act="rescan" ${busy}>Пересканувати</button>`
-        : `<b>Проект ще не скановано</b>Tintr пройде всі кліпи і знайде шари з тегом _cc-. Результат запам'ятовується, тож наступні підключення будуть миттєві.
+        : `<b>Проект ще не скановано</b>Tintr пройде всі кліпи і знайде анімаційні шари без тегу _cc-. Результат запам'ятовується, тож наступні підключення будуть миттєві.
            <button class="btn primary" data-act="rescan" ${busy}>Сканувати проект</button>`;
     return `<main class="center"><div class="stage"><div class="empty">${body}</div></div></main>`;
   }

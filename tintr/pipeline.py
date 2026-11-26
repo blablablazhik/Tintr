@@ -28,7 +28,7 @@ from tintr.core.cost import CostTracker
 from tintr.core.dedupe import assign_duplicates, pixel_hash
 from tintr.core.palette import layer_palette
 from tintr.core.vlm import AuthError, Cancelled
-from tintr.naming import key_basename
+from tintr.naming import is_excluded, key_basename
 from tintr.tvp import bridge
 
 Log = Callable[[str], None]
@@ -70,15 +70,20 @@ class Pipeline:
         self.manifest.save()
         when = self.manifest.scanned_at.replace("T", " ")[:16]
         self.log(f"З кешу: {len(self.manifest.layers)} шар(ів)" + (f", скан від {when}" if when else "")
-                 + f" ({time.time() - t:.1f}s). Нові шари з тегом — «Пересканувати».")
+                 + f" ({time.time() - t:.1f}s). Нові шари — «Пересканувати».")
+        if any(is_excluded(e.layer_name) for e in self.manifest.layers.values()):
+            self.log("  ⚠ Tintr тепер бере шари БЕЗ тегу _cc- (тег = не фарбувати). Кеш зроблено за старим правилом — "
+                     "«⋯» → «Пересканувати проект».")
         if missing:
             self.log("  ⚠ не знайдено в TVPaint: " + ", ".join(missing) + " — потрібне пересканування")
         return list(self.manifest.layers.values())
 
     def rescan(self) -> list[M.LayerEntry]:
         t = time.time()
-        self.log("Scanning all clips for '_сс-' / '_cc-' layers…")
-        found = bridge.scan(self.log)
+        self.log("Сканування кліпів: шари без тегу _cc-…")
+        # colour layers Tintr inserted earlier are never colour sources, even if the user renamed them
+        skip = {e.color_layer_id for e in self.manifest.layers.values() if e.color_layer_id is not None}
+        found = bridge.scan(self.log, skip)
         old = self.manifest.layers
         new: dict[str, M.LayerEntry] = {}
         for f in found:
@@ -101,7 +106,7 @@ class Pipeline:
         self.manifest.scanned_at = datetime.now().isoformat(timespec="seconds")
         self._restore_outputs()
         self.manifest.save()
-        self.log(f"Found {len(new)} tagged layer(s) in {time.time() - t:.1f}s.")
+        self.log(f"Знайдено шарів: {len(new)} ({time.time() - t:.1f}s).")
         return list(new.values())
 
     @staticmethod

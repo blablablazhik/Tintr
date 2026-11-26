@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from tintr.naming import color_layer_name, fs_safe, is_tagged
+from tintr.naming import color_layer_name, fs_safe, is_excluded
 
 Log = Callable[[str], None]
 
@@ -94,15 +94,17 @@ def current_project() -> ProjectInfo:
     return ProjectInfo(p.name, Path(p.path), p.width, p.height, _start_frame)
 
 
-def scan(log: Log) -> list[FoundLayer]:
-    """Full scan of every clip (slow on big projects) — only on first open or explicit rescan."""
+def scan(log: Log, skip_ids: set[int] = frozenset()) -> list[FoundLayer]:
+    """Full scan of every clip (slow on big projects) — only on first open or explicit rescan.
+
+    Takes every animation layer without the `_cc-` tag, except Tintr's colour layers (by name or `skip_ids`)."""
     from pytvpaint.project import Project
 
     p = Project.current_project()
     found: list[FoundLayer] = []
     for pos, clip in enumerate(p.clips):
         for layer in clip.get_layers():
-            if not (layer.is_anim_layer and is_tagged(layer.name)):
+            if not layer.is_anim_layer or layer.id in skip_ids or is_excluded(layer.name):
                 continue
             insts = [(i.start, i.length) for i in layer.instances]
             found.append(FoundLayer(clip.id, clip.name, pos, layer.id, layer.name, insts))
@@ -231,7 +233,7 @@ def _kill_color_layer(src_name: str, existing_id: int | None, ids: list[int], lo
 
 def insert_color_layer(clip_id: int, src_layer_id: int, existing_id: int | None,
                        keys: list[tuple[int, int, Path]], tmp_dir: Path, size: tuple[int, int], log: Log) -> int:
-    """Create '<name>_color' under the tagged layer from (start, length, file) keys. Returns its id.
+    """Create '<name>_color' under the coloured layer from (start, length, file) keys. Returns its id.
 
     One tv_LoadSequence (preloaded, so the temp files can go) + tv_ExposureSet per key, set from the
     last key backwards so the shift of later images doesn't move keys already timed.
